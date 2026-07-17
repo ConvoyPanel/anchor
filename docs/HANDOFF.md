@@ -70,11 +70,12 @@ Protocol claims accept both JWT-standard audience encodings (a string or string 
   - Coterm callbacks/models/routes removed without data migration.
   - Disposable Proxmox console-user creation removed.
   - Focused Anchor tests plus the complete 354-test panel suite pass.
-- Panel frontend implemented and live-tested:
+- Panel frontend committed and live-tested:
   - Anchor administration, enrollment command, and node assignment UI.
   - Custom full-screen noVNC/xterm.js route with reconnect, fullscreen, Ctrl+Alt+Delete, and new-window support.
   - noVNC is used only as the RFB client/rendering engine; none of its bundled UI is used.
   - Convoy generates an eight-character per-session VNC password, signs it into the agent claim, and supplies it directly to the RFB client.
+  - `panel:9b1f4b1a` adds the administration UI; `panel:21437581` adds the custom console and per-session VNC authentication.
 
 ## Verification Completed
 
@@ -83,6 +84,7 @@ Protocol claims accept both JWT-standard audience encodings (a string or string 
 - `cargo test` (5 tests)
 - `cargo build --release`
 - Live direct-agent noVNC session against Proxmox VE `9.2.2`; canvas `640x480`, nonblank pixel sampling, desktop `1440x900`, and mobile `390x844` screenshots.
+- Anchor administration mobile check at `390x844` with no horizontal overflow.
 - Multi-stage `anchor:test` Docker image build
 - Non-root container startup and in-container `anchor health` request
 - Docker Compose configuration validation
@@ -90,11 +92,9 @@ Protocol claims accept both JWT-standard audience encodings (a string or string 
 
 ## Remaining Work
 
-1. Commit the verified panel Anchor admin and custom console UI.
-2. Verify terminal and relay streams.
-3. Add confirmation to Anchor deletion and mobile row rendering to the Anchor admin list.
-4. Test the systemd restrictions on a live Proxmox node and adjust only where `qm` requires it.
-5. Threat-model relay target routing, token replay, process privileges, and enrollment rotation before a production release.
+1. Verify terminal and relay streams.
+2. Test the systemd restrictions on a live Proxmox node and adjust only where `qm` requires it.
+3. Threat-model relay target routing, token replay, process privileges, and enrollment rotation before a production release.
 
 ## Repositories and Worktrees
 
