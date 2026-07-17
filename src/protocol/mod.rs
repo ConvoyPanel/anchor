@@ -18,9 +18,9 @@ pub const SESSION_PROTOCOL_PREFIX: &str = "anchor.session.";
 pub struct SessionClaims {
     pub iss: String,
     pub sub: String,
-    pub aud: Vec<String>,
-    pub exp: u64,
-    pub iat: u64,
+    pub aud: Audience,
+    pub exp: f64,
+    pub iat: f64,
     pub jti: String,
     pub protocol: u16,
     pub console: ConsoleTarget,
@@ -45,6 +45,13 @@ pub struct RelayTarget {
 #[serde(transparent)]
 pub struct UrlString(pub String);
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum Audience {
+    One(String),
+    Many(Vec<String>),
+}
+
 pub fn decode_session(token: &str, config: &Config) -> Result<SessionClaims> {
     let mut validation = Validation::new(Algorithm::HS256);
     validation.set_audience(&[&config.installation_id]);
@@ -55,9 +62,12 @@ pub fn decode_session(token: &str, config: &Config) -> Result<SessionClaims> {
         &DecodingKey::from_secret(config.secret.as_bytes()),
         &validation,
     )
-    .map_err(|error| match error.kind() {
-        jsonwebtoken::errors::ErrorKind::InvalidAudience => Error::InvalidAudience,
-        _ => Error::InvalidSession,
+    .map_err(|error| {
+        tracing::debug!(kind = ?error.kind(), "session token validation failed");
+        match error.kind() {
+            jsonwebtoken::errors::ErrorKind::InvalidAudience => Error::InvalidAudience,
+            _ => Error::InvalidSession,
+        }
     })?
     .claims;
 
@@ -104,9 +114,9 @@ mod tests {
         let claims = SessionClaims {
             iss: "https://panel.example.com".into(),
             sub: "user_1".into(),
-            aud: vec![config.installation_id.clone()],
-            exp: now() + 60,
-            iat: now(),
+            aud: Audience::One(config.installation_id.clone()),
+            exp: (now() + 60) as f64,
+            iat: now() as f64,
             jti: "session_1".into(),
             protocol: PROTOCOL_MAX,
             console: ConsoleTarget::QemuVnc { vm_id: 100 },

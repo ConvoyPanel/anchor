@@ -1,4 +1,8 @@
-use std::{fmt, net::SocketAddr, path::Path};
+use std::{
+    fmt,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -39,12 +43,15 @@ pub struct Config {
 pub struct AgentConfig {
     #[serde(default = "default_qm_path")]
     pub qm_path: String,
+    #[serde(default = "default_vnc_socket_dir")]
+    pub vnc_socket_dir: PathBuf,
 }
 
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             qm_path: default_qm_path(),
+            vnc_socket_dir: default_vnc_socket_dir(),
         }
     }
 }
@@ -73,6 +80,11 @@ impl Config {
                 "agent.qm_path must not be empty".into(),
             ));
         }
+        if self.mode == Mode::Agent && self.agent.vnc_socket_dir.as_os_str().is_empty() {
+            return Err(Error::Configuration(
+                "agent.vnc_socket_dir must not be empty".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -85,6 +97,10 @@ fn default_listen_addr() -> SocketAddr {
 
 fn default_qm_path() -> String {
     "/usr/sbin/qm".to_owned()
+}
+
+fn default_vnc_socket_dir() -> PathBuf {
+    PathBuf::from("/run/qemu-server")
 }
 
 #[cfg(test)]
@@ -105,6 +121,7 @@ panel_url = "https://panel.example.com"
 
         assert_eq!(config.listen_addr, "127.0.0.1:2115".parse().unwrap());
         assert_eq!(config.agent.qm_path, "/usr/sbin/qm");
+        assert_eq!(config.agent.vnc_socket_dir, Path::new("/run/qemu-server"));
         assert!(config.validate().is_ok());
     }
 

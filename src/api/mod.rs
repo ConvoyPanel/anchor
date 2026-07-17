@@ -105,6 +105,10 @@ fn session_token(headers: &HeaderMap) -> Result<&str> {
         .get(axum::http::header::SEC_WEBSOCKET_PROTOCOL)
         .and_then(|value| value.to_str().ok())
         .ok_or(Error::InvalidSession)?;
+    tracing::debug!(
+        protocol_count = protocols.split(',').count(),
+        "received console WebSocket protocols"
+    );
 
     protocols
         .split(',')

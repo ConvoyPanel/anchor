@@ -4,7 +4,7 @@ Anchor uses the same binary for agent and relay installations, but each role has
 
 ## Agent on Proxmox VE
 
-Install the `.deb` directly on the Proxmox VE host. The service runs as root because `qm vncproxy` and `qm terminal` require local privileged access. The systemd unit removes Linux capabilities, prevents privilege escalation, makes the system filesystem read-only, and restricts namespaces and device access.
+Install the `.deb` directly on the Proxmox VE host. The service runs as root because the Proxmox-managed VNC sockets and `qm terminal` require local privileged access. The systemd unit removes Linux capabilities, prevents privilege escalation, makes the system filesystem read-only, and restricts namespaces and device access.
 
 After installing the package, enroll it with the one-time command shown by Convoy:
 
