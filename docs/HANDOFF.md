@@ -60,6 +60,13 @@ Current authentication is per-installation HS256. The panel mints short-lived ou
 - Hardened systemd unit and cargo-deb package metadata for Proxmox agents.
 - Non-root multi-stage Docker image and Compose+Caddy relay example.
 - Deployment, update, rollback, and TLS documentation.
+- Panel control plane committed as `panel:e9f509bb`:
+  - `anchors` schema for agents, relays, enrollment, heartbeat, and node assignment.
+  - One-time enrollment and encrypted per-installation secrets.
+  - Direct and nested relay session JWT issuance.
+  - Coterm callbacks/models/routes removed without data migration.
+  - Disposable Proxmox console-user creation removed.
+  - Focused Anchor tests plus the complete 354-test panel suite pass.
 
 ## Verification Completed
 
@@ -74,12 +81,11 @@ Current authentication is per-installation HS256. The panel mints short-lived ou
 
 ## Remaining Work
 
-1. Add panel Anchor models, enrollment, session issuance, health polling, and admin UI.
-2. Remove Coterm and disposable PVE console-user code.
-3. Add the panel noVNC/xterm.js full-screen route.
-4. Seed a live VM and verify RFB and terminal streams through both agent and relay.
-5. Test the systemd restrictions on a live Proxmox node and adjust only where `qm` requires it.
-6. Threat-model relay target routing, token replay, process privileges, and enrollment rotation before a production release.
+1. Add the panel Anchor admin UI.
+2. Add the panel noVNC/xterm.js full-screen route.
+3. Seed a live VM and verify RFB and terminal streams through both agent and relay.
+4. Test the systemd restrictions on a live Proxmox node and adjust only where `qm` requires it.
+5. Threat-model relay target routing, token replay, process privileges, and enrollment rotation before a production release.
 
 ## Repositories and Worktrees
 
