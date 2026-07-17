@@ -27,13 +27,13 @@ Coterm data will not be migrated. Convoy will remove the temporary Proxmox conso
 
 Live node checked on 2026-07-17:
 
-- Proxmox VE `9.2.2` creates an RFB socket at `/run/qemu-server/<vmid>.vnc`; a live VM returned `RFB 003.008` when Anchor connected to it.
-- `qm vncproxy <vmid>` cannot be used without the PVE ticket environment (`LC_PVE_TICKET`), so it would retain the authentication brokerage Anchor is intended to remove.
+- Proxmox VE `9.2.2` creates an authenticated RFB socket at `/run/qemu-server/<vmid>.vnc`; a live VM returned `RFB 003.008` and then requested VNC challenge authentication.
+- Proxmox's `qm vncproxy <vmid>` source shows that `LC_PVE_TICKET` is passed directly to QMP `set_password` and expired after 30 seconds. It does not validate that value as a PVE user ticket.
 - `qm terminal <vmid>` provides a local serial-terminal path.
-- The local VNC socket and terminal command let Anchor authenticate a Convoy session without creating a disposable PVE user, requesting a `PVEAuthCookie`, or exposing Proxmox's `vncwebsocket` endpoint.
-- A temporary VM (`100`, `anchor-e2e`) was created for live verification. Its VNC socket completed the RFB version greeting; end-to-end browser rendering is the next check.
+- Convoy can therefore mint a random per-session VNC password, sign it into the Anchor claim, and give it to noVNC without creating a disposable PVE user, requesting a `PVEAuthCookie`, or exposing Proxmox's `vncwebsocket` endpoint.
+- A temporary VM (`100`, `anchor-e2e`) was created for live verification. The custom Convoy console completed VNC challenge authentication and rendered its `640x480` framebuffer through Anchor at desktop and mobile viewports.
 
-Anchor does not modify QMP state or create console sockets. It connects to the VNC socket that Proxmox already creates and owns, preserving Proxmox ownership of VM lifecycle, migration, and console state.
+Anchor invokes Proxmox's supported `qm vncproxy` command. Proxmox installs the one-time VNC password through QMP and expires it after 30 seconds, preserving Proxmox ownership of VM lifecycle and console state.
 
 ## Protocol v1
 
@@ -43,7 +43,7 @@ Endpoints:
 - `GET /api/v1/info`
 - `GET /api/v1/console` (WebSocket)
 
-WebSocket clients offer both `anchor.v1` and `anchor.session.<jwt>` subprotocols. Tokens are not placed in URLs or cookies. An agent token contains a QEMU VM ID and console type. A relay token contains an opaque nested agent token and the agent's WebSocket URL.
+WebSocket clients offer both `anchor.v1` and `anchor.session.<jwt>` subprotocols. Tokens are not placed in URLs or cookies. An agent token contains a QEMU VM ID, console type, and a random eight-character password for VNC sessions. A relay token contains an opaque nested agent token and the agent's WebSocket URL.
 
 Current authentication is per-installation HS256. The panel mints short-lived outer and nested tokens without sharing an agent secret with a relay.
 Protocol claims accept both JWT-standard audience encodings (a string or string array) and fractional NumericDate values emitted by Laravel/Lcobucci.
@@ -53,7 +53,7 @@ Protocol claims accept both JWT-standard audience encodings (a string or string 
 - Rust CLI with `serve`, `enroll`, and `validate` commands.
 - TOML configuration for agent and relay modes.
 - Version, protocol range, mode, and capability discovery.
-- Local Proxmox-managed VNC socket and `qm terminal` process bridges.
+- Local `qm vncproxy` and `qm terminal` process bridges.
 - Relay WebSocket bridge using a nested agent session token.
 - Atomic enrollment config writes with owner-only permissions.
 - Initial configuration, protocol, health, and discovery tests.
@@ -70,6 +70,11 @@ Protocol claims accept both JWT-standard audience encodings (a string or string 
   - Coterm callbacks/models/routes removed without data migration.
   - Disposable Proxmox console-user creation removed.
   - Focused Anchor tests plus the complete 354-test panel suite pass.
+- Panel frontend implemented and live-tested:
+  - Anchor administration, enrollment command, and node assignment UI.
+  - Custom full-screen noVNC/xterm.js route with reconnect, fullscreen, Ctrl+Alt+Delete, and new-window support.
+  - noVNC is used only as the RFB client/rendering engine; none of its bundled UI is used.
+  - Convoy generates an eight-character per-session VNC password, signs it into the agent claim, and supplies it directly to the RFB client.
 
 ## Verification Completed
 
@@ -77,6 +82,7 @@ Protocol claims accept both JWT-standard audience encodings (a string or string 
 - `cargo clippy --all-targets -- -D warnings`
 - `cargo test` (5 tests)
 - `cargo build --release`
+- Live direct-agent noVNC session against Proxmox VE `9.2.2`; canvas `640x480`, nonblank pixel sampling, desktop `1440x900`, and mobile `390x844` screenshots.
 - Multi-stage `anchor:test` Docker image build
 - Non-root container startup and in-container `anchor health` request
 - Docker Compose configuration validation
@@ -84,9 +90,9 @@ Protocol claims accept both JWT-standard audience encodings (a string or string 
 
 ## Remaining Work
 
-1. Finish and commit the panel Anchor admin UI.
-2. Finish and commit the custom panel noVNC/xterm.js full-screen route; noVNC is used only as the RFB engine, not as a bundled UI.
-3. Finish live RFB verification through the direct agent, then verify terminal and relay streams.
+1. Commit the verified panel Anchor admin and custom console UI.
+2. Verify terminal and relay streams.
+3. Add confirmation to Anchor deletion and mobile row rendering to the Anchor admin list.
 4. Test the systemd restrictions on a live Proxmox node and adjust only where `qm` requires it.
 5. Threat-model relay target routing, token replay, process privileges, and enrollment rotation before a production release.
 

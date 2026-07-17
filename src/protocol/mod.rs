@@ -31,7 +31,7 @@ pub struct SessionClaims {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ConsoleTarget {
-    QemuVnc { vm_id: u32 },
+    QemuVnc { vm_id: u32, password: String },
     QemuTerminal { vm_id: u32 },
 }
 
@@ -119,7 +119,10 @@ mod tests {
             iat: now() as f64,
             jti: "session_1".into(),
             protocol: PROTOCOL_MAX,
-            console: ConsoleTarget::QemuVnc { vm_id: 100 },
+            console: ConsoleTarget::QemuVnc {
+                vm_id: 100,
+                password: "12345678".into(),
+            },
             relay: None,
         };
         let token = encode(

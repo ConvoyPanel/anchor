@@ -8,4 +8,3 @@ public_url = "https://anchor.example.com"
 
 [agent]
 qm_path = "/usr/sbin/qm"
-vnc_socket_dir = "/run/qemu-server"
