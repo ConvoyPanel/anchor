@@ -56,6 +56,7 @@ Current authentication is per-installation HS256. The panel mints short-lived ou
 - Atomic enrollment config writes with owner-only permissions.
 - Initial configuration, protocol, health, and discovery tests.
 - Native `anchor health` command for container and service checks.
+- Outbound authenticated heartbeat every 60 seconds, including version, mode, protocol range, and capabilities.
 - Hardened systemd unit and cargo-deb package metadata for Proxmox agents.
 - Non-root multi-stage Docker image and Compose+Caddy relay example.
 - Deployment, update, rollback, and TLS documentation.

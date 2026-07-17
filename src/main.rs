@@ -3,6 +3,7 @@ mod config;
 mod console;
 mod enrollment;
 mod error;
+mod heartbeat;
 mod protocol;
 
 use std::path::PathBuf;
@@ -86,10 +87,12 @@ async fn serve(path: PathBuf) -> Result<()> {
     let config = Config::load(&path).await?;
     let listener = tokio::net::TcpListener::bind(config.listen_addr).await?;
     info!(mode = %config.mode, address = %config.listen_addr, "Anchor is ready");
+    let heartbeat = tokio::spawn(heartbeat::run(config.clone()));
 
     axum::serve(listener, app::router(config).into_make_service())
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+    heartbeat.abort();
 
     Ok(())
 }

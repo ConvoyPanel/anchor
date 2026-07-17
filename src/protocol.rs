@@ -18,7 +18,7 @@ pub const SESSION_PROTOCOL_PREFIX: &str = "anchor.session.";
 pub struct SessionClaims {
     pub iss: String,
     pub sub: String,
-    pub aud: String,
+    pub aud: Vec<String>,
     pub exp: u64,
     pub iat: u64,
     pub jti: String,
@@ -104,7 +104,7 @@ mod tests {
         let claims = SessionClaims {
             iss: "https://panel.example.com".into(),
             sub: "user_1".into(),
-            aud: config.installation_id.clone(),
+            aud: vec![config.installation_id.clone()],
             exp: now() + 60,
             iat: now(),
             jti: "session_1".into(),

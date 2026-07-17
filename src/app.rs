@@ -43,8 +43,8 @@ struct ProtocolRange {
     max: u16,
 }
 
-const AGENT_CAPABILITIES: &[&str] = &["console.qemu.vnc", "console.qemu.terminal"];
-const RELAY_CAPABILITIES: &[&str] = &["console.relay"];
+pub const AGENT_CAPABILITIES: &[&str] = &["console.qemu.vnc", "console.qemu.terminal"];
+pub const RELAY_CAPABILITIES: &[&str] = &["console.relay"];
 
 pub fn router(config: Config) -> Router {
     Router::new()
