@@ -57,6 +57,7 @@ Current authentication is per-installation HS256. The panel mints short-lived ou
 - Initial configuration, protocol, health, and discovery tests.
 - Native `anchor health` command for container and service checks.
 - Outbound authenticated heartbeat every 60 seconds, including version, mode, protocol range, and capabilities.
+- Domain-oriented Rust layout: `api`, `console`, `panel`, and `protocol` modules; agent and relay bridges are isolated; `main.rs` only initializes tracing and dispatches the CLI.
 - Hardened systemd unit and cargo-deb package metadata for Proxmox agents.
 - Non-root multi-stage Docker image and Compose+Caddy relay example.
 - Deployment, update, rollback, and TLS documentation.

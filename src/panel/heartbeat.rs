@@ -5,7 +5,7 @@ use serde::Serialize;
 use tokio::time::MissedTickBehavior;
 
 use crate::{
-    app::{AGENT_CAPABILITIES, RELAY_CAPABILITIES},
+    api::{AGENT_CAPABILITIES, RELAY_CAPABILITIES},
     config::{Config, Mode},
     protocol::{PROTOCOL_MAX, PROTOCOL_MIN},
 };
