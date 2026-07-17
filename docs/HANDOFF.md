@@ -31,7 +31,7 @@ Live node checked on 2026-07-17:
 - Proxmox's `qm vncproxy <vmid>` source shows that `LC_PVE_TICKET` is passed directly to QMP `set_password` and expired after 30 seconds. It does not validate that value as a PVE user ticket.
 - `qm terminal <vmid>` provides a local serial-terminal path.
 - Convoy can therefore mint a random per-session VNC password, sign it into the Anchor claim, and give it to noVNC without creating a disposable PVE user, requesting a `PVEAuthCookie`, or exposing Proxmox's `vncwebsocket` endpoint.
-- A temporary VM (`100`, `anchor-e2e`) was created for live verification. The custom Convoy console completed VNC challenge authentication and rendered its `640x480` framebuffer through Anchor at desktop and mobile viewports.
+- A temporary VM (`100`, `anchor-e2e`) was created for live verification. The custom Convoy console completed VNC challenge authentication and rendered its framebuffer through Anchor at desktop and mobile viewports; the VM was destroyed after the checks passed.
 
 Anchor invokes Proxmox's supported `qm vncproxy` command. Proxmox installs the one-time VNC password through QMP and expires it after 30 seconds, preserving Proxmox ownership of VM lifecycle and console state.
 
