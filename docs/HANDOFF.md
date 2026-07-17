@@ -55,20 +55,33 @@ Current authentication is per-installation HS256. The panel mints short-lived ou
 - Relay WebSocket bridge using a nested agent session token.
 - Atomic enrollment config writes with owner-only permissions.
 - Initial configuration, protocol, health, and discovery tests.
+- Native `anchor health` command for container and service checks.
+- Hardened systemd unit and cargo-deb package metadata for Proxmox agents.
+- Non-root multi-stage Docker image and Compose+Caddy relay example.
+- Deployment, update, rollback, and TLS documentation.
+
+## Verification Completed
+
+- `cargo fmt --check`
+- `cargo clippy --all-targets -- -D warnings`
+- `cargo test` (5 tests)
+- `cargo build --release`
+- Multi-stage `anchor:test` Docker image build
+- Non-root container startup and in-container `anchor health` request
+- Docker Compose configuration validation
+- `cargo deb` produced and inspected `anchor_0.1.0~alpha.1-1_arm64.deb`
 
 ## Remaining Work
 
-1. Compile, format, and resolve initial implementation issues.
-2. Add Debian/systemd and relay Docker packaging.
-3. Add panel Anchor models, enrollment, session issuance, health polling, and admin UI.
-4. Remove Coterm and disposable PVE console-user code.
-5. Add the panel noVNC/xterm.js full-screen route.
-6. Seed a live VM and verify RFB and terminal streams through both agent and relay.
-7. Threat-model relay target routing, token replay, process privileges, and enrollment rotation before a production release.
+1. Add panel Anchor models, enrollment, session issuance, health polling, and admin UI.
+2. Remove Coterm and disposable PVE console-user code.
+3. Add the panel noVNC/xterm.js full-screen route.
+4. Seed a live VM and verify RFB and terminal streams through both agent and relay.
+5. Test the systemd restrictions on a live Proxmox node and adjust only where `qm` requires it.
+6. Threat-model relay target routing, token replay, process privileges, and enrollment rotation before a production release.
 
 ## Repositories and Worktrees
 
 - `anchor`: new implementation. Commit work here incrementally.
 - `panel`: integration target. Branch `next` was clean and seven commits ahead of `origin/next` at start.
 - `coterm`: reference only. It had pre-existing uncommitted Rust changes and must not be modified or reset.
-

@@ -42,6 +42,11 @@ enum Command {
         #[arg(short, long, default_value = "/etc/anchor/anchor.toml")]
         config: PathBuf,
     },
+    /// Check a running Anchor health endpoint.
+    Health {
+        #[arg(long, default_value = "http://127.0.0.1:2115/health")]
+        url: url::Url,
+    },
 }
 
 #[tokio::main]
@@ -65,6 +70,13 @@ async fn main() -> Result<()> {
         Command::Validate { config } => {
             Config::load(&config).await?;
             info!(path = %config.display(), "configuration is valid");
+            Ok(())
+        }
+        Command::Health { url } => {
+            let response = reqwest::get(url).await?;
+            if !response.status().is_success() {
+                return Err(crate::error::Error::Health(response.status()));
+            }
             Ok(())
         }
     }

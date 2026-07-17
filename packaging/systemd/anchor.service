@@ -1,0 +1,39 @@
+[Unit]
+Description=Convoy Anchor agent
+Documentation=https://github.com/ConvoyPanel/anchor
+After=network-online.target pve-cluster.service
+Wants=network-online.target
+ConditionPathExists=/etc/anchor/anchor.toml
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/anchor validate --config /etc/anchor/anchor.toml
+ExecStart=/usr/bin/anchor serve --config /etc/anchor/anchor.toml
+Restart=on-failure
+RestartSec=5s
+User=root
+Group=root
+
+AmbientCapabilities=
+CapabilityBoundingSet=
+LockPersonality=yes
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
+

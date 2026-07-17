@@ -1,0 +1,4 @@
+{$ANCHOR_DOMAIN} {
+    reverse_proxy anchor:2115
+}
+

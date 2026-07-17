@@ -5,6 +5,7 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/ConvoyPanel/anchor"
 description = "Headless console agent and relay for Convoy"
+authors = ["Convoy Panel"]
 
 [dependencies]
 axum = { version = "0.8", features = ["ws"] }
@@ -15,7 +16,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 toml = "0.9"
 tower-http = { version = "0.6", features = ["request-id", "trace"] }
@@ -32,3 +33,15 @@ codegen-units = 1
 lto = true
 strip = true
 
+[package.metadata.deb]
+section = "net"
+priority = "optional"
+depends = "ca-certificates"
+maintainer-scripts = "packaging/debian"
+assets = [
+    ["target/release/anchor", "usr/bin/anchor", "755"],
+    ["packaging/systemd/anchor.service", "lib/systemd/system/anchor.service", "644"],
+    ["config/anchor.example.toml", "usr/share/doc/anchor/examples/anchor.toml", "644"],
+    ["README.md", "usr/share/doc/anchor/README.md", "644"],
+    ["docs/HANDOFF.md", "usr/share/doc/anchor/HANDOFF.md", "644"],
+]

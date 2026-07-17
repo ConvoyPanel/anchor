@@ -18,6 +18,8 @@ pub enum Error {
     InvalidMode(String),
     #[error("console process failed: {0}")]
     Console(String),
+    #[error("health check failed with HTTP {0}")]
+    Health(reqwest::StatusCode),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]

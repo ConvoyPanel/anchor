@@ -3,6 +3,7 @@ use futures_util::{SinkExt, StreamExt};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::Command,
+    time::{Duration, MissedTickBehavior, interval},
 };
 use tokio_tungstenite::{connect_async, tungstenite};
 
@@ -41,6 +42,7 @@ pub async fn serve_agent(
     let mut stdout = child.stdout.take().expect("child stdout is piped");
     let mut stderr = child.stderr.take().expect("child stderr is piped");
     let mut buffer = vec![0_u8; 64 * 1024];
+    let mut heartbeat = heartbeat();
 
     loop {
         tokio::select! {
@@ -64,7 +66,8 @@ pub async fn serve_agent(
                     return Err(Error::Console(message.trim().to_owned()));
                 }
                 break;
-            }
+            },
+            _ = heartbeat.tick() => socket.send(AxumMessage::Ping(Vec::new().into())).await?,
         }
     }
 
@@ -93,6 +96,7 @@ pub async fn serve_relay(mut client: WebSocket, target: RelayTarget) -> Result<(
         )
         .body(())?;
     let (mut agent, _) = connect_async(request).await?;
+    let mut heartbeat = heartbeat();
 
     loop {
         tokio::select! {
@@ -105,11 +109,21 @@ pub async fn serve_relay(mut client: WebSocket, target: RelayTarget) -> Result<(
                 Some(Ok(message)) => client.send(to_axum(message)).await?,
                 Some(Err(error)) => return Err(error.into()),
                 None => break,
-            }
+            },
+            _ = heartbeat.tick() => {
+                client.send(AxumMessage::Ping(Vec::new().into())).await?;
+                agent.send(tungstenite::Message::Ping(Vec::new().into())).await?;
+            },
         }
     }
 
     Ok(())
+}
+
+fn heartbeat() -> tokio::time::Interval {
+    let mut interval = interval(Duration::from_secs(30));
+    interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    interval
 }
 
 fn relay_host(url: &str) -> Result<String> {
