@@ -30,20 +30,42 @@ pub async fn serve(mut client: WebSocket, target: RelayTarget) -> Result<()> {
         .body(())?;
     let (mut agent, _) = connect_async(request).await?;
     let mut heartbeat = heartbeat();
+    // Cleared when we send keepalive pings and set again on any inbound frame
+    // from the respective peer. A full interval of silence from either side
+    // means that half of the relay is dead, so we stop rather than leaking the
+    // session (and, on the agent side, the underlying `qm` process it fronts).
+    let mut client_responsive = true;
+    let mut agent_responsive = true;
 
     loop {
         tokio::select! {
             message = client.recv() => match message {
-                Some(Ok(message)) => agent.send(to_tungstenite(message)).await?,
+                Some(Ok(message)) => {
+                    client_responsive = true;
+                    agent.send(to_tungstenite(message)).await?;
+                }
                 Some(Err(error)) => return Err(Error::Console(error.to_string())),
                 None => break,
             },
             message = agent.next() => match message {
-                Some(Ok(message)) => client.send(to_axum(message)).await?,
+                Some(Ok(message)) => {
+                    agent_responsive = true;
+                    client.send(to_axum(message)).await?;
+                }
                 Some(Err(error)) => return Err(error.into()),
                 None => break,
             },
             _ = heartbeat.tick() => {
+                if !client_responsive || !agent_responsive {
+                    tracing::debug!(
+                        client_responsive,
+                        agent_responsive,
+                        "closing relay session: a peer stopped answering keepalives",
+                    );
+                    break;
+                }
+                client_responsive = false;
+                agent_responsive = false;
                 client.send(AxumMessage::Ping(Vec::new().into())).await?;
                 agent.send(tungstenite::Message::Ping(Vec::new().into())).await?;
             },
