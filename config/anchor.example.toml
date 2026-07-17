@@ -1,0 +1,11 @@
+# Agent installations normally receive this file through `anchor enroll`.
+mode = "agent"
+listen_addr = "127.0.0.1:2115"
+installation_id = "anchor_example"
+secret = "replace-with-at-least-32-random-characters"
+panel_url = "https://panel.example.com"
+public_url = "https://anchor.example.com"
+
+[agent]
+qm_path = "/usr/sbin/qm"
+
