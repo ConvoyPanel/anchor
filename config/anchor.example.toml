@@ -7,4 +7,9 @@ panel_url = "https://panel.example.com"
 public_url = "https://anchor.example.com"
 
 [agent]
+# Used for the display console, which needs Proxmox to install a one-time
+# VNC password. The serial console attaches to the guest's chardev socket
+# directly and does not go through `qm`.
 qm_path = "/usr/sbin/qm"
+qemu_config_dir = "/etc/pve/qemu-server"
+qemu_run_dir = "/var/run/qemu-server"

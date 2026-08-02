@@ -37,14 +37,23 @@ pub struct Config {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AgentConfig {
+    /// Still used for VNC, which needs Proxmox to install a one-time password.
     #[serde(default = "default_qm_path")]
     pub qm_path: String,
+    /// Where PVE keeps guest configs; read to find a VM's serial interface.
+    #[serde(default = "default_qemu_config_dir")]
+    pub qemu_config_dir: String,
+    /// Where QEMU exposes each running guest's chardev sockets.
+    #[serde(default = "default_qemu_run_dir")]
+    pub qemu_run_dir: String,
 }
 
 impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             qm_path: default_qm_path(),
+            qemu_config_dir: default_qemu_config_dir(),
+            qemu_run_dir: default_qemu_run_dir(),
         }
     }
 }
@@ -85,6 +94,14 @@ fn default_listen_addr() -> SocketAddr {
 
 fn default_qm_path() -> String {
     "/usr/sbin/qm".to_owned()
+}
+
+fn default_qemu_config_dir() -> String {
+    "/etc/pve/qemu-server".to_owned()
+}
+
+fn default_qemu_run_dir() -> String {
+    "/var/run/qemu-server".to_owned()
 }
 
 #[cfg(test)]
