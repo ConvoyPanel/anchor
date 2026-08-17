@@ -46,6 +46,24 @@ pub struct AgentConfig {
     /// Where QEMU exposes each running guest's chardev sockets.
     #[serde(default = "default_qemu_run_dir")]
     pub qemu_run_dir: String,
+    /// Restores a downloaded vzdump artifact into a guest.
+    #[serde(default = "default_qmrestore_path")]
+    pub qmrestore_path: String,
+    /// pmxcfs mount point, read to learn which VMIDs the cluster already uses.
+    #[serde(default = "default_pve_dir")]
+    pub pve_dir: String,
+    /// Scratch space for in-flight template downloads. Lives under the dump
+    /// directory because that is the volume sized for whole guest images.
+    #[serde(default = "default_template_temp_dir")]
+    pub template_temp_dir: String,
+    /// Whether this agent will install templates at all.
+    #[serde(default = "default_true")]
+    pub templates_enabled: bool,
+    /// How many template installs may run at once. Each one holds a multi-GB
+    /// artifact on disk and a `qmrestore` writing it out, so this is a disk
+    /// budget as much as a CPU one.
+    #[serde(default = "default_template_concurrency")]
+    pub template_concurrency: usize,
 }
 
 impl Default for AgentConfig {
@@ -54,6 +72,11 @@ impl Default for AgentConfig {
             qm_path: default_qm_path(),
             qemu_config_dir: default_qemu_config_dir(),
             qemu_run_dir: default_qemu_run_dir(),
+            qmrestore_path: default_qmrestore_path(),
+            pve_dir: default_pve_dir(),
+            template_temp_dir: default_template_temp_dir(),
+            templates_enabled: default_true(),
+            template_concurrency: default_template_concurrency(),
         }
     }
 }
@@ -82,6 +105,19 @@ impl Config {
                 "agent.qm_path must not be empty".into(),
             ));
         }
+        if self.mode == Mode::Agent
+            && self.agent.templates_enabled
+            && self.agent.qmrestore_path.trim().is_empty()
+        {
+            return Err(Error::Configuration(
+                "agent.qmrestore_path must not be empty when templates are enabled".into(),
+            ));
+        }
+        if self.agent.template_concurrency == 0 {
+            return Err(Error::Configuration(
+                "agent.template_concurrency must be at least 1".into(),
+            ));
+        }
         Ok(())
     }
 }
@@ -102,6 +138,26 @@ fn default_qemu_config_dir() -> String {
 
 fn default_qemu_run_dir() -> String {
     "/var/run/qemu-server".to_owned()
+}
+
+fn default_qmrestore_path() -> String {
+    "/usr/sbin/qmrestore".to_owned()
+}
+
+fn default_pve_dir() -> String {
+    "/etc/pve".to_owned()
+}
+
+fn default_template_temp_dir() -> String {
+    "/var/lib/vz/dump/anchor-tmp".to_owned()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_template_concurrency() -> usize {
+    2
 }
 
 #[cfg(test)]

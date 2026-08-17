@@ -439,6 +439,7 @@ mod tests {
                 qm_path,
                 qemu_config_dir: qemu_config_dir.to_str().unwrap().to_owned(),
                 qemu_run_dir: qemu_run_dir.to_str().unwrap().to_owned(),
+                ..AgentConfig::default()
             },
         }
     }

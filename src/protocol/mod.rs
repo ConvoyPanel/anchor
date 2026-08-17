@@ -2,7 +2,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::{
     config::Config,
@@ -52,12 +52,82 @@ pub enum Audience {
     Many(Vec<String>),
 }
 
+/// Claims on a template-management token.
+///
+/// Deliberately a separate claim set from [`SessionClaims`] rather than another
+/// `console` variant: these tokens are minted for the panel's own background
+/// jobs, never for a user's browser, and carry no console target at all.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct TemplateClaims {
+    pub iss: String,
+    pub sub: String,
+    pub aud: Audience,
+    pub exp: f64,
+    pub iat: f64,
+    pub jti: String,
+    pub protocol: u16,
+    pub template: TemplateAction,
+}
+
+/// What a template token authorises.
+///
+/// The work order travels *inside the token*, the same way [`ConsoleTarget`]
+/// does, so a captured token can only ever replay the exact install it was
+/// minted for — it cannot be pointed at a different URL, VMID or storage.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum TemplateAction {
+    Install(Box<InstallSpec>),
+    Status { job: String },
+    Cancel { job: String },
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct InstallSpec {
+    /// Registry template name, e.g. `debian-12-amd64`. Logging and display only.
+    pub name: String,
+    pub url: String,
+    pub sha256: String,
+    #[serde(default)]
+    pub size: Option<u64>,
+    pub vmid: u32,
+    pub storage: String,
+    /// Restore over an existing guest at this VMID instead of refusing.
+    #[serde(default)]
+    pub overwrite: bool,
+}
+
+/// Claim sets that carry the protocol version Anchor negotiates on.
+pub trait Protocolled {
+    fn protocol(&self) -> u16;
+}
+
+impl Protocolled for SessionClaims {
+    fn protocol(&self) -> u16 {
+        self.protocol
+    }
+}
+
+impl Protocolled for TemplateClaims {
+    fn protocol(&self) -> u16 {
+        self.protocol
+    }
+}
+
 pub fn decode_session(token: &str, config: &Config) -> Result<SessionClaims> {
+    decode_claims(token, config)
+}
+
+pub fn decode_template(token: &str, config: &Config) -> Result<TemplateClaims> {
+    decode_claims(token, config)
+}
+
+fn decode_claims<T: DeserializeOwned + Protocolled>(token: &str, config: &Config) -> Result<T> {
     let mut validation = Validation::new(Algorithm::HS256);
     validation.set_audience(&[&config.installation_id]);
     validation.validate_exp = true;
 
-    let claims = decode::<SessionClaims>(
+    let claims = decode::<T>(
         token,
         &DecodingKey::from_secret(config.secret.as_bytes()),
         &validation,
@@ -71,8 +141,8 @@ pub fn decode_session(token: &str, config: &Config) -> Result<SessionClaims> {
     })?
     .claims;
 
-    if !(PROTOCOL_MIN..=PROTOCOL_MAX).contains(&claims.protocol) {
-        return Err(Error::UnsupportedProtocol(claims.protocol));
+    if !(PROTOCOL_MIN..=PROTOCOL_MAX).contains(&claims.protocol()) {
+        return Err(Error::UnsupportedProtocol(claims.protocol()));
     }
 
     Ok(claims)

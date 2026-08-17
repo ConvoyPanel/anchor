@@ -11,16 +11,19 @@ authors = ["Convoy Panel"]
 axum = { version = "0.8", features = ["ws"] }
 clap = { version = "4.5", features = ["derive"] }
 futures-util = "0.3"
+hex = "0.4"
 jsonwebtoken = "9.3"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "time"] }
 tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 toml = "0.9"
 tower-http = { version = "0.6", features = ["request-id", "trace"] }
 tracing = "0.1"
+uuid = { version = "1", features = ["serde", "v4"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 url = { version = "2", features = ["serde"] }
 

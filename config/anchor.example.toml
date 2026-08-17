@@ -13,3 +13,19 @@ public_url = "https://anchor.example.com"
 qm_path = "/usr/sbin/qm"
 qemu_config_dir = "/etc/pve/qemu-server"
 qemu_run_dir = "/var/run/qemu-server"
+
+# Installing VM templates the panel imports from Cofoundry. Each install
+# downloads a multi-gigabyte .vma.zst into `template_temp_dir`, verifies its
+# SHA-256, restores it with `qmrestore`, and converts the result into a
+# template. Set `templates_enabled = false` to keep this agent console-only;
+# the capability then disappears from /api/v1/info and the panel leaves the
+# node out of imports.
+qmrestore_path = "/usr/sbin/qmrestore"
+# Read to learn which VMIDs the cluster already uses, so a collision is caught
+# before the download rather than by `qmrestore` after it.
+pve_dir = "/etc/pve"
+template_temp_dir = "/var/lib/vz/dump/anchor-tmp"
+templates_enabled = true
+# Concurrent installs. This is a disk budget as much as a CPU one — each one
+# holds a full artifact on the dump volume while it restores.
+template_concurrency = 2

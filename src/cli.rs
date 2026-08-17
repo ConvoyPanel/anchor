@@ -70,12 +70,17 @@ pub async fn run() -> Result<()> {
 }
 
 async fn serve(path: PathBuf) -> Result<()> {
-    let config = Config::load(&path).await?;
+    let config = std::sync::Arc::new(Config::load(&path).await?);
     let listener = tokio::net::TcpListener::bind(config.listen_addr).await?;
     info!(mode = %config.mode, address = %config.listen_addr, "Anchor is ready");
-    let heartbeat = tokio::spawn(heartbeat::run(config.clone()));
+    let heartbeat = tokio::spawn(heartbeat::run((*config).clone()));
 
-    axum::serve(listener, api::router(config).into_make_service())
+    let (router, jobs) = api::build(config);
+    // Template jobs do not survive a restart, so anything still in the scratch
+    // directory is an orphaned partial download sitting on the dump volume.
+    jobs.sweep_temp_dir().await;
+
+    axum::serve(listener, router.into_make_service())
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     heartbeat.abort();
