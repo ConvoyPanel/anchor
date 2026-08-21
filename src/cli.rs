@@ -5,7 +5,7 @@ use tracing::info;
 
 use crate::{
     Error, Result, api,
-    config::Config,
+    config::{Config, Mode},
     panel::{enrollment, heartbeat},
 };
 
@@ -23,12 +23,20 @@ enum Command {
         #[arg(short, long, default_value = "/etc/anchor/anchor.toml")]
         config: PathBuf,
     },
-    /// Exchange a one-time panel token for this installation's credentials.
+    /// Exchange a panel token for this installation's credentials.
+    ///
+    /// Works with both kinds of token: one issued for an Anchor the panel
+    /// already has a row for, and an enrollment key that admits a machine the
+    /// panel has never seen. The panel tells them apart; nothing here has to.
     Enroll {
         #[arg(long)]
         panel_url: url::Url,
         #[arg(long)]
         token: String,
+        /// What this installation is going to run as. Only consulted when the
+        /// token is an enrollment key -- otherwise the panel already knows.
+        #[arg(long, value_enum, default_value_t = Mode::Agent)]
+        mode: Mode,
         #[arg(short, long, default_value = "/etc/anchor/anchor.toml")]
         config: PathBuf,
     },
@@ -52,8 +60,9 @@ pub async fn run() -> Result<()> {
         Command::Enroll {
             panel_url,
             token,
+            mode,
             config,
-        } => enrollment::enroll(panel_url, token, config).await,
+        } => enrollment::enroll(panel_url, token, mode, config).await,
         Command::Validate { config } => {
             Config::load(&config).await?;
             info!(path = %config.display(), "configuration is valid");

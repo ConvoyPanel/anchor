@@ -5,8 +5,11 @@ use url::Url;
 
 use crate::error::{Error, Result};
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+// `ValueEnum` so `anchor enroll --mode relay` accepts exactly the two values
+// the wire format uses, rather than a free string validated after the request.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, clap::ValueEnum)]
 #[serde(rename_all = "snake_case")]
+#[value(rename_all = "snake_case")]
 pub enum Mode {
     Agent,
     Relay,
