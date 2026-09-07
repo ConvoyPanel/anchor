@@ -97,6 +97,34 @@ pub struct InstallSpec {
     pub overwrite: bool,
 }
 
+/// Claims on a schema-read token.
+///
+/// Its own claim set for the same reason [`TemplateClaims`] is: the panel mints
+/// these for itself, never for a browser, and they authorise reading a
+/// definition off this node rather than doing anything to it.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SchemaClaims {
+    pub iss: String,
+    pub sub: String,
+    pub aud: Audience,
+    pub exp: f64,
+    pub iat: f64,
+    pub jti: String,
+    pub protocol: u16,
+    pub schema: SchemaRequest,
+}
+
+/// Which definition a schema token authorises reading.
+///
+/// An enum with one variant today, because the next thing the panel wants to
+/// read off a node -- storage content types, say -- should be a new variant
+/// rather than a new endpoint and a new token type.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum SchemaRequest {
+    QemuCreate,
+}
+
 /// Claim sets that carry the protocol version Anchor negotiates on.
 pub trait Protocolled {
     fn protocol(&self) -> u16;
@@ -114,11 +142,21 @@ impl Protocolled for TemplateClaims {
     }
 }
 
+impl Protocolled for SchemaClaims {
+    fn protocol(&self) -> u16 {
+        self.protocol
+    }
+}
+
 pub fn decode_session(token: &str, config: &Config) -> Result<SessionClaims> {
     decode_claims(token, config)
 }
 
 pub fn decode_template(token: &str, config: &Config) -> Result<TemplateClaims> {
+    decode_claims(token, config)
+}
+
+pub fn decode_schema(token: &str, config: &Config) -> Result<SchemaClaims> {
     decode_claims(token, config)
 }
 

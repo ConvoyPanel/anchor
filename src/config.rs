@@ -59,6 +59,11 @@ pub struct AgentConfig {
     /// directory because that is the volume sized for whole guest images.
     #[serde(default = "default_template_temp_dir")]
     pub template_temp_dir: String,
+    /// Proxmox's own API schema, shipped with `pve-docs`. Read so the panel can
+    /// validate a hardware profile against the rules this node will enforce,
+    /// instead of against whatever PVE release the panel was built for.
+    #[serde(default = "default_apidoc_path")]
+    pub apidoc_path: String,
     /// Whether this agent will install templates at all.
     #[serde(default = "default_true")]
     pub templates_enabled: bool,
@@ -78,6 +83,7 @@ impl Default for AgentConfig {
             qmrestore_path: default_qmrestore_path(),
             pve_dir: default_pve_dir(),
             template_temp_dir: default_template_temp_dir(),
+            apidoc_path: default_apidoc_path(),
             templates_enabled: default_true(),
             template_concurrency: default_template_concurrency(),
         }
@@ -153,6 +159,10 @@ fn default_pve_dir() -> String {
 
 fn default_template_temp_dir() -> String {
     "/var/lib/vz/dump/anchor-tmp".to_owned()
+}
+
+fn default_apidoc_path() -> String {
+    "/usr/share/pve-docs/api-viewer/apidoc.js".to_owned()
 }
 
 fn default_true() -> bool {

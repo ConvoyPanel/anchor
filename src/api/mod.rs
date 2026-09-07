@@ -15,9 +15,10 @@ use crate::{
     console,
     error::{Error, Result},
     protocol::{
-        PROTOCOL_MAX, PROTOCOL_MIN, SESSION_PROTOCOL_PREFIX, TemplateAction, WEBSOCKET_PROTOCOL,
-        decode_session, decode_template,
+        PROTOCOL_MAX, PROTOCOL_MIN, SESSION_PROTOCOL_PREFIX, SchemaRequest, TemplateAction,
+        WEBSOCKET_PROTOCOL, decode_schema, decode_session, decode_template,
     },
+    pve::schema::{self, QemuCreateSchema},
     templates::{Job, Jobs},
 };
 
@@ -48,6 +49,10 @@ struct ProtocolRange {
 
 pub const AGENT_CAPABILITIES: &[&str] = &["console.qemu.vnc", "console.qemu.terminal"];
 pub const TEMPLATE_CAPABILITY: &str = "templates.install";
+/// Reading the API schema needs no configuration beyond the docs package, so an
+/// agent advertises it unconditionally and the panel falls back to its own
+/// bundled copy only when a node cannot answer.
+pub const SCHEMA_CAPABILITY: &str = "pve.schema";
 pub const RELAY_CAPABILITIES: &[&str] = &["console.relay"];
 
 /// What this installation can actually do.
@@ -60,6 +65,7 @@ fn capabilities(config: &Config) -> Vec<&'static str> {
         Mode::Relay => RELAY_CAPABILITIES.to_vec(),
         Mode::Agent => {
             let mut capabilities = AGENT_CAPABILITIES.to_vec();
+            capabilities.push(SCHEMA_CAPABILITY);
             if config.agent.templates_enabled {
                 capabilities.push(TEMPLATE_CAPABILITY);
             }
@@ -87,6 +93,7 @@ pub fn build(config: Arc<Config>) -> (Router, Jobs) {
         .route("/health", get(health))
         .route("/api/v1/info", get(info))
         .route("/api/v1/console", get(console_session))
+        .route("/api/v1/pve/schema", get(pve_schema))
         .route("/api/v1/templates/installs", post(start_install))
         .route(
             "/api/v1/templates/installs/{id}",
@@ -119,6 +126,23 @@ async fn info(State(state): State<AppState>) -> Json<InfoResponse<'static>> {
         },
         capabilities: capabilities(&state.config),
     })
+}
+
+/// Hand back Proxmox's own parameter schema for creating a guest.
+///
+/// Read on demand rather than cached: it changes only when the node is upgraded,
+/// the panel caches the answer anyway, and a stale schema is worse than a slow
+/// one -- it would validate a profile against rules this node stopped enforcing.
+async fn pve_schema(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Json<QemuCreateSchema>> {
+    let claims = decode_schema(bearer(&headers)?, &state.config)?;
+    ensure_agent(&state)?;
+
+    let SchemaRequest::QemuCreate = claims.schema;
+
+    Ok(Json(schema::load(&state.config.agent.apidoc_path)?))
 }
 
 /// Queue a template install described entirely by the bearer token.

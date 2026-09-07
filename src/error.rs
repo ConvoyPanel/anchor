@@ -26,6 +26,8 @@ pub enum Error {
     TemplateCancelled,
     #[error("{0}")]
     Template(String),
+    #[error("could not read the Proxmox API schema: {0}")]
+    Schema(String),
     #[error("health check failed with HTTP {0}")]
     Health(reqwest::StatusCode),
     #[error(transparent)]
@@ -55,6 +57,9 @@ impl IntoResponse for Error {
             Self::UnsupportedProtocol(_) | Self::InvalidMode(_) | Self::Template(_) => {
                 StatusCode::BAD_REQUEST
             }
+            // The panel can act on this one: it names a file this node does not
+            // have, which is a packaging problem an admin can fix.
+            Self::Schema(_) => StatusCode::NOT_IMPLEMENTED,
             Self::UnknownJob => StatusCode::NOT_FOUND,
             Self::TemplatesDisabled => StatusCode::CONFLICT,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
