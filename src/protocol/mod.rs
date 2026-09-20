@@ -74,12 +74,107 @@ pub struct TemplateClaims {
 /// The work order travels *inside the token*, the same way [`ConsoleTarget`]
 /// does, so a captured token can only ever replay the exact install it was
 /// minted for — it cannot be pointed at a different URL, VMID or storage.
+///
+/// The migration contract calls this enum `Command`; it is `TemplateAction`
+/// here because that is the name the install side already shipped, and
+/// renaming it would churn the destination side for no gain. The variants are
+/// the contract's, and `action` is still the tag on the wire.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum TemplateAction {
     Install(Box<InstallSpec>),
-    Status { job: String },
-    Cancel { job: String },
+    /// Produce a migratable archive of one guest on this node.
+    Export(Box<ExportSpec>),
+    /// Read one finished archive. Kept separate from [`Self::Discard`] so a
+    /// token minted to let a destination node *download* an artifact cannot
+    /// also delete it; neither one authorises the dump directory at large.
+    Fetch {
+        artifact: String,
+    },
+    /// Remove one finished archive.
+    Discard {
+        artifact: String,
+    },
+    Status {
+        job: String,
+    },
+    Cancel {
+        job: String,
+    },
+}
+
+/// A request to dump one guest into an archive this node will then serve.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ExportSpec {
+    pub vmid: u32,
+    /// `stop` is the only mode a migration may use: a snapshot-mode archive is
+    /// crash-consistent as of the moment it began, so every write the guest
+    /// made during the transfer would be silently lost at cutover. The panel
+    /// stops the guest before asking for the export and leaves it stopped until
+    /// the destination is verified, so this restates in the protocol what the
+    /// ordering already requires.
+    #[serde(default)]
+    pub mode: ExportMode,
+    #[serde(default)]
+    pub compress: Compression,
+    /// Where the archive is written. `None` means the node's own dump
+    /// directory, which in practice is a per-artifact directory Anchor owns
+    /// under `agent.export_dir` and can therefore sweep.
+    #[serde(default)]
+    pub storage: Option<String>,
+}
+
+/// How `vzdump` treats the guest it is dumping.
+///
+/// One variant, deliberately. See [`ExportSpec::mode`]: the alternatives are
+/// all wrong for a migration, so this exists to state the choice on the wire
+/// rather than to offer a menu.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportMode {
+    #[default]
+    Stop,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Compression {
+    /// `vzdump`'s own default, and much faster than gzip at a comparable ratio
+    /// on the disk images this moves.
+    #[default]
+    Zstd,
+    Lzo,
+    None,
+}
+
+impl ExportMode {
+    pub fn vzdump_arg(self) -> &'static str {
+        match self {
+            Self::Stop => "stop",
+        }
+    }
+}
+
+impl Compression {
+    /// What `vzdump --compress` accepts. `0` is how it spells "none".
+    pub fn vzdump_arg(self) -> &'static str {
+        match self {
+            Self::Zstd => "zstd",
+            Self::Lzo => "lzo",
+            Self::None => "0",
+        }
+    }
+
+    /// The suffix `vzdump` gives an archive compressed this way. Used only to
+    /// recognise the archive inside a directory Anchor owns, never to build a
+    /// path from anything a caller supplied.
+    pub fn archive_suffix(self) -> &'static str {
+        match self {
+            Self::Zstd => ".vma.zst",
+            Self::Lzo => ".vma.lzo",
+            Self::None => ".vma",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -241,5 +336,129 @@ mod tests {
         .unwrap();
 
         assert_eq!(decode_session(&token, &config).unwrap().sub, "user_1");
+    }
+
+    fn template_token(action: serde_json::Value, audience: &str, expires_in: i64) -> String {
+        let claims = serde_json::json!({
+            "iss": "https://panel.example.com",
+            "sub": "panel",
+            "aud": audience,
+            "exp": now() as i64 + expires_in,
+            "iat": now() as i64 - 1,
+            "jti": "token_1",
+            "protocol": PROTOCOL_MAX,
+            "template": action,
+        });
+
+        encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(config().secret.as_bytes()),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn an_export_action_round_trips_through_a_token() {
+        let token = template_token(
+            serde_json::json!({
+                "action": "export",
+                "vmid": 100,
+                "mode": "stop",
+                "compress": "zstd",
+                "storage": null,
+            }),
+            "agent_1",
+            60,
+        );
+
+        let claims = decode_template(&token, &config()).unwrap();
+        let TemplateAction::Export(spec) = claims.template else {
+            panic!("expected an export action");
+        };
+        assert_eq!(spec.vmid, 100);
+        assert_eq!(spec.mode, ExportMode::Stop);
+        assert_eq!(spec.compress, Compression::Zstd);
+        assert!(spec.storage.is_none());
+    }
+
+    /// A panel that omits the optional fields gets the only safe combination
+    /// rather than a deserialisation error.
+    #[test]
+    fn an_export_spec_defaults_to_a_stopped_zstd_dump() {
+        let spec: ExportSpec = serde_json::from_value(serde_json::json!({ "vmid": 4001 })).unwrap();
+
+        assert_eq!(spec.mode, ExportMode::Stop);
+        assert_eq!(spec.compress, Compression::Zstd);
+        assert_eq!(spec.storage, None);
+    }
+
+    #[test]
+    fn fetch_and_discard_each_name_one_artifact() {
+        for action in ["fetch", "discard"] {
+            let token = template_token(
+                serde_json::json!({ "action": action, "artifact": "artifact_1" }),
+                "agent_1",
+                60,
+            );
+
+            let named = match decode_template(&token, &config()).unwrap().template {
+                TemplateAction::Fetch { artifact } | TemplateAction::Discard { artifact } => {
+                    artifact
+                }
+                other => panic!("expected fetch or discard, got {other:?}"),
+            };
+            assert_eq!(named, "artifact_1");
+        }
+    }
+
+    #[test]
+    fn an_expired_artifact_token_is_rejected() {
+        let token = template_token(
+            serde_json::json!({ "action": "fetch", "artifact": "artifact_1" }),
+            "agent_1",
+            -120,
+        );
+
+        assert!(matches!(
+            decode_template(&token, &config()),
+            Err(Error::InvalidSession)
+        ));
+    }
+
+    #[test]
+    fn an_artifact_token_for_another_anchor_is_rejected() {
+        let token = template_token(
+            serde_json::json!({ "action": "fetch", "artifact": "artifact_1" }),
+            "agent_2",
+            60,
+        );
+
+        assert!(matches!(
+            decode_template(&token, &config()),
+            Err(Error::InvalidAudience)
+        ));
+    }
+
+    #[test]
+    fn compression_maps_onto_vzdumps_own_spelling() {
+        assert_eq!(Compression::Zstd.vzdump_arg(), "zstd");
+        assert_eq!(Compression::Lzo.vzdump_arg(), "lzo");
+        assert_eq!(Compression::None.vzdump_arg(), "0");
+        assert_eq!(ExportMode::Stop.vzdump_arg(), "stop");
+        assert_eq!(Compression::None.archive_suffix(), ".vma");
+        assert_eq!(Compression::Zstd.archive_suffix(), ".vma.zst");
+    }
+
+    #[test]
+    fn the_wire_names_are_the_contracts() {
+        assert_eq!(
+            serde_json::to_value(ExportMode::Stop).unwrap(),
+            serde_json::json!("stop")
+        );
+        assert_eq!(
+            serde_json::to_value(Compression::None).unwrap(),
+            serde_json::json!("none")
+        );
     }
 }

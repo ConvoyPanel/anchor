@@ -20,10 +20,17 @@ pub enum Error {
     Console(String),
     #[error("template installs are disabled on this Anchor")]
     TemplatesDisabled,
+    #[error("guest exports are disabled on this Anchor")]
+    ExportsDisabled,
     #[error("no such template job")]
     UnknownJob,
+    #[error("no such artifact")]
+    UnknownArtifact,
     #[error("the template install was cancelled")]
     TemplateCancelled,
+    /// Carries the operational failures of both pipelines: a taken VMID, a
+    /// `qmrestore` that exited non-zero, a `vzdump` that did the same. The
+    /// message is written for an admin to read verbatim.
     #[error("{0}")]
     Template(String),
     #[error("could not read the Proxmox API schema: {0}")]
@@ -60,8 +67,8 @@ impl IntoResponse for Error {
             // The panel can act on this one: it names a file this node does not
             // have, which is a packaging problem an admin can fix.
             Self::Schema(_) => StatusCode::NOT_IMPLEMENTED,
-            Self::UnknownJob => StatusCode::NOT_FOUND,
-            Self::TemplatesDisabled => StatusCode::CONFLICT,
+            Self::UnknownJob | Self::UnknownArtifact => StatusCode::NOT_FOUND,
+            Self::TemplatesDisabled | Self::ExportsDisabled => StatusCode::CONFLICT,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
 

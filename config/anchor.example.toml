@@ -29,3 +29,21 @@ templates_enabled = true
 # Concurrent installs. This is a disk budget as much as a CPU one — each one
 # holds a full artifact on the dump volume while it restores.
 template_concurrency = 2
+
+# Exporting a guest so another node can take it over. The panel stops the
+# guest, asks for an export, hands the destination node a URL onto
+# `GET /artifacts/{id}` here, and discards the artifact once the destination
+# is verified. Exports share `template_concurrency` with installs, because a
+# `vzdump` costs this node the same disk and the same I/O as a `qmrestore`.
+# Set `exports_enabled = false` to make this node an import-only destination;
+# the `migration.export` capability then disappears from /api/v1/info.
+vzdump_path = "/usr/bin/vzdump"
+exports_enabled = true
+# Where an export lands when the request names no storage. Anchor owns this
+# directory outright and clears it at startup, so it never has to reason about
+# an admin's own backups.
+export_dir = "/var/lib/vz/dump/anchor-exports"
+# How long a finished artifact survives before it is swept, whether or not any
+# migration claimed it. This is the answer to a multi-gigabyte file nobody
+# deletes, so it is a ceiling and not a hint.
+export_ttl_secs = 86400
