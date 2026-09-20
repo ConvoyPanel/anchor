@@ -1,16 +1,25 @@
+mod artifacts;
+mod command;
+mod export;
 mod install;
 mod vmid;
 
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use serde::Serialize;
 use tokio::sync::{Notify, Semaphore};
 
-use crate::{Error, Result, config::Config, protocol::InstallSpec};
+pub use artifacts::{Artifact, Artifacts};
+
+use crate::{
+    Error, Result,
+    config::Config,
+    protocol::{ExportSpec, InstallSpec},
+};
 
 /// Where an install has got to.
 ///
@@ -22,6 +31,10 @@ use crate::{Error, Result, config::Config, protocol::InstallSpec};
 pub enum JobStatus {
     Pending,
     Downloading,
+    /// An export's `vzdump` is running. The only phase exports add; they share
+    /// `Verifying` with installs, because on both sides it means the same
+    /// thing — a whole archive being read through sha256.
+    Dumping,
     Verifying,
     Restoring,
     Finalizing,
@@ -52,23 +65,67 @@ pub struct Job {
     pub error: Option<String>,
     pub started_at: u64,
     pub finished_at: Option<u64>,
+    /// What a finished export produced. Flattened, so a completed export's
+    /// status body carries `artifact`, `sha256`, `size` and `path` at the top
+    /// level exactly as the migration contract specifies, and an install's
+    /// body is byte-for-byte what it always was.
+    #[serde(flatten)]
+    pub export: Option<ExportResult>,
+}
+
+/// The four things the panel needs from a finished export: an id to ask for,
+/// a digest the destination will check, a size to show, and the path on this
+/// node for an admin who has to go looking.
+#[derive(Clone, Debug, Serialize)]
+pub struct ExportResult {
+    pub artifact: String,
+    pub sha256: String,
+    pub size: u64,
+    pub path: String,
 }
 
 impl Job {
-    fn new(id: String, spec: &InstallSpec) -> Self {
+    fn pending(id: String, name: String, vmid: u32, storage: String, total: Option<u64>) -> Self {
         Self {
             id,
-            name: spec.name.clone(),
-            vmid: spec.vmid,
-            storage: spec.storage.clone(),
+            name,
+            vmid,
+            storage,
             status: JobStatus::Pending,
             progress: 0,
             downloaded: 0,
-            total: spec.size,
+            total,
             error: None,
             started_at: now(),
             finished_at: None,
+            export: None,
         }
+    }
+
+    fn for_install(id: String, spec: &InstallSpec) -> Self {
+        Self::pending(
+            id,
+            spec.name.clone(),
+            spec.vmid,
+            spec.storage.clone(),
+            spec.size,
+        )
+    }
+
+    fn for_export(id: String, spec: &ExportSpec, config: &Config) -> Self {
+        Self::pending(
+            id,
+            format!("export of VM {}", spec.vmid),
+            spec.vmid,
+            // An export with no storage writes into a directory Anchor owns, so
+            // name that directory rather than leaving the field blank.
+            spec.storage
+                .clone()
+                .unwrap_or_else(|| config.agent.export_dir.clone()),
+            // Nothing is being downloaded, and vzdump does not announce a final
+            // size up front; the archive's size arrives with the artifact.
+            None,
+        )
     }
 }
 
@@ -89,9 +146,10 @@ struct Entry {
 #[derive(Clone)]
 pub struct Jobs {
     entries: Arc<Mutex<HashMap<String, Entry>>>,
-    /// Bounds how many multi-GB downloads and `qmrestore`s run at once; queued
-    /// jobs sit in `Pending` until a permit frees up.
+    /// Bounds how many multi-GB downloads, `qmrestore`s and `vzdump`s run at
+    /// once; queued jobs sit in `Pending` until a permit frees up.
     permits: Arc<Semaphore>,
+    artifacts: Artifacts,
     config: Arc<Config>,
 }
 
@@ -100,8 +158,18 @@ impl Jobs {
         Self {
             entries: Arc::new(Mutex::new(HashMap::new())),
             permits: Arc::new(Semaphore::new(config.agent.template_concurrency)),
+            artifacts: Artifacts::new(
+                config.agent.export_dir.clone(),
+                Duration::from_secs(config.agent.export_ttl_secs),
+            ),
             config,
         }
+    }
+
+    /// The artifacts finished exports left behind, for the download and
+    /// discard endpoints and for the sweeper `serve` spawns.
+    pub fn artifacts(&self) -> &Artifacts {
+        &self.artifacts
     }
 
     /// Clear scratch space left by a previous run.
@@ -123,7 +191,7 @@ impl Jobs {
             return Err(Error::TemplatesDisabled);
         }
 
-        let (job, cancel) = self.register(&spec);
+        let (job, cancel) = self.register(Job::for_install(new_id(), &spec));
         let id = job.id.clone();
         let jobs = self.clone();
         tokio::spawn(async move {
@@ -140,10 +208,39 @@ impl Jobs {
         Ok(job)
     }
 
+    /// Queue an export and return its initial record.
+    ///
+    /// The same registry, the same permits and the same cancellation as an
+    /// install, so `Status` and `Cancel` do not have to know which kind of job
+    /// they were handed.
+    pub fn start_export(&self, spec: ExportSpec) -> Result<Job> {
+        if !self.config.agent.templates_enabled {
+            return Err(Error::TemplatesDisabled);
+        }
+        if !self.config.agent.exports_enabled {
+            return Err(Error::ExportsDisabled);
+        }
+
+        let (job, cancel) = self.register(Job::for_export(new_id(), &spec, &self.config));
+        let id = job.id.clone();
+        let jobs = self.clone();
+        tokio::spawn(async move {
+            let permit = jobs
+                .permits
+                .acquire()
+                .await
+                .expect("semaphore is not closed");
+            let outcome = export::run(&jobs, &id, &spec, &cancel).await;
+            drop(permit);
+            jobs.finish(&id, outcome);
+        });
+
+        Ok(job)
+    }
+
     /// Record a job as `Pending` without starting it. Split out of `start` so
     /// the state machine can be exercised without a worker racing the test.
-    fn register(&self, spec: &InstallSpec) -> (Job, Arc<Notify>) {
-        let job = Job::new(uuid::Uuid::new_v4().to_string(), spec);
+    fn register(&self, job: Job) -> (Job, Arc<Notify>) {
         let cancel = Arc::new(Notify::new());
 
         self.entries.lock().expect("jobs lock").insert(
@@ -211,6 +308,18 @@ impl Jobs {
         self.update(id, |job| job.progress = percent.min(100));
     }
 
+    fn record_artifact(&self, id: &str, artifact: &Artifact) {
+        self.update(id, |job| {
+            job.export = Some(ExportResult {
+                artifact: artifact.id.clone(),
+                sha256: artifact.sha256.clone(),
+                size: artifact.size,
+                path: artifact.path.display().to_string(),
+            });
+            job.total = Some(artifact.size);
+        });
+    }
+
     fn finish(&self, id: &str, outcome: Result<()>) {
         self.update(id, |job| {
             job.finished_at = Some(now());
@@ -230,7 +339,7 @@ impl Jobs {
         if let Err(error) = &outcome
             && !matches!(error, Error::TemplateCancelled)
         {
-            tracing::warn!(job = id, %error, "template install failed");
+            tracing::warn!(job = id, %error, "job failed");
         }
     }
 
@@ -239,6 +348,10 @@ impl Jobs {
             apply(&mut entry.job);
         }
     }
+}
+
+fn new_id() -> String {
+    uuid::Uuid::new_v4().to_string()
 }
 
 fn now() -> u64 {
@@ -299,7 +412,7 @@ mod tests {
     #[tokio::test]
     async fn download_progress_is_a_percentage_of_the_declared_size() {
         let jobs = Jobs::new(config());
-        let (job, _cancel) = jobs.register(&spec());
+        let (job, _cancel) = jobs.register(Job::for_install(new_id(), &spec()));
 
         jobs.record_download(&job.id, 250, Some(1000));
 
@@ -313,7 +426,7 @@ mod tests {
         let jobs = Jobs::new(config());
         let mut spec = spec();
         spec.size = None;
-        let (job, _cancel) = jobs.register(&spec);
+        let (job, _cancel) = jobs.register(Job::for_install(new_id(), &spec));
 
         jobs.record_download(&job.id, 4096, None);
 
@@ -322,10 +435,81 @@ mod tests {
         assert_eq!(job.downloaded, 4096);
     }
 
+    fn export_spec() -> ExportSpec {
+        ExportSpec {
+            vmid: 100,
+            mode: crate::protocol::ExportMode::Stop,
+            compress: crate::protocol::Compression::Zstd,
+            storage: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn refuses_to_queue_an_export_when_exports_are_disabled() {
+        let mut config = (*config()).clone();
+        config.agent.exports_enabled = false;
+
+        let error = Jobs::new(Arc::new(config))
+            .start_export(export_spec())
+            .unwrap_err();
+
+        assert!(matches!(error, Error::ExportsDisabled));
+    }
+
+    /// Exports ride on the install switch too: a node that will not touch
+    /// guest images at all should not be dumping them out either.
+    #[tokio::test]
+    async fn refuses_to_queue_an_export_when_templates_are_disabled() {
+        let mut config = (*config()).clone();
+        config.agent.templates_enabled = false;
+
+        let error = Jobs::new(Arc::new(config))
+            .start_export(export_spec())
+            .unwrap_err();
+
+        assert!(matches!(error, Error::TemplatesDisabled));
+    }
+
+    /// The contract's status body, exactly: four keys at the top level.
+    #[tokio::test]
+    async fn a_finished_export_reports_the_contracts_four_fields() {
+        let jobs = Jobs::new(config());
+        let (job, _cancel) =
+            jobs.register(Job::for_export(new_id(), &export_spec(), jobs.config()));
+        let artifact = jobs.artifacts().register(
+            std::path::PathBuf::from("/var/lib/vz/dump/vzdump-qemu-100.vma.zst"),
+            "c".repeat(64),
+            4096,
+            Artifacts::allocate_id(),
+            None,
+        );
+
+        jobs.record_artifact(&job.id, &artifact);
+
+        let body = serde_json::to_value(jobs.get(&job.id).unwrap()).unwrap();
+        assert_eq!(body["artifact"], artifact.id);
+        assert_eq!(body["sha256"], "c".repeat(64));
+        assert_eq!(body["size"], 4096);
+        assert_eq!(body["path"], "/var/lib/vz/dump/vzdump-qemu-100.vma.zst");
+    }
+
+    /// The install side's status body must not gain keys it never had.
+    #[tokio::test]
+    async fn an_install_job_serialises_no_export_fields() {
+        let jobs = Jobs::new(config());
+        let (job, _cancel) = jobs.register(Job::for_install(new_id(), &spec()));
+
+        let body = serde_json::to_value(jobs.get(&job.id).unwrap()).unwrap();
+
+        for key in ["artifact", "sha256", "size", "path"] {
+            assert!(body.get(key).is_none(), "{key} leaked into an install body");
+        }
+    }
+
     #[tokio::test]
     async fn a_failed_job_keeps_its_error() {
         let jobs = Jobs::new(config());
-        let (job, _cancel) = jobs.register(&spec());
+        let (job, _cancel) = jobs.register(Job::for_install(new_id(), &spec()));
 
         jobs.finish(&job.id, Err(Error::Template("boom".into())));
 
