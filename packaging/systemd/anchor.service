@@ -14,35 +14,29 @@ RestartSec=5s
 User=root
 Group=root
 
-# Narrowly granted rather than empty. This agent's job is to invoke `qm`,
-# `vzdump` and `qmrestore`, and those need a little of root's ordinary
-# authority: with an empty bounding set `vzdump` dies part-way through trying
-# to chown its own task log to www-data ("Operation not permitted"), then
-# cannot unlink the half-written log it just made. Each entry is here for a
-# named reason and nothing broader is granted.
+# ---------------------------------------------------------------------------
+# Hardening
 #
-#   CAP_CHOWN, CAP_FOWNER   PVE chowns its task logs to www-data
-#   CAP_DAC_OVERRIDE        writing into /var/log/pve and /etc/pve
-#   CAP_SETUID, CAP_SETGID  PVE tooling drops privileges as it works
-#   CAP_NET_ADMIN           QEMU creates the guest's tap interface; without it
-#                           /dev/net/tun opens and then refuses to configure
+# This unit was written as though Anchor were an ordinary network daemon. It is
+# not. Anchor exists to run `vzdump`, `qmrestore` and `qm`, and a child process
+# inherits every restriction below -- so each one applies to Proxmox's own
+# tooling, not merely to the agent.
 #
-# This is less of a reduction than it looks: the unit already runs the agent as
-# root:root with write access to /etc/pve, so an empty set was mostly
-# decorative -- and it silently broke template installs, not just migration.
-AmbientCapabilities=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETUID CAP_SETGID CAP_NET_ADMIN
-CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETUID CAP_SETGID CAP_NET_ADMIN
+# That mismatch was not theoretical. Ten settings each broke the agent outright,
+# every one only at runtime, and every one reporting something other than its
+# real cause: a backup that blamed a missing log file, a QEMU that blamed the
+# BIOS, a bridge that said only "interface activation failed". Template
+# installs, which shipped long before migration, failed the same way -- they
+# downloaded a multi-gigabyte artifact and then died on a read-only filesystem.
+#
+# The rule here is therefore: keep what costs nothing, drop what is
+# incompatible with driving virtual machines, and say why -- so that nobody
+# helpfully turns one back on and rediscovers the same ten bugs.
+# ---------------------------------------------------------------------------
+
+# Kept. None of these interfere with running guests, and they close real doors.
 LockPersonality=yes
 NoNewPrivileges=yes
-# NOT PrivateDevices. This unit was written as though Anchor were an ordinary
-# network daemon; it is not, it starts QEMU. A private /dev holds pseudo devices
-# only, and `vzdump` needs a widening list of real ones to read a guest's disk:
-# /dev/kvm first ("KVM virtualisation configured, but not available", which
-# reads like a BIOS problem), then /dev/net/tun for the guest's NIC, and
-# /dev/vhost-net and loop devices behind those depending on the storage. Binding
-# them one at a time is a queue of identical bugs found one restore at a time,
-# in a service that already runs as root with write access to /etc/pve.
-PrivateDevices=no
 PrivateTmp=yes
 ProtectClock=yes
 ProtectControlGroups=yes
@@ -50,34 +44,58 @@ ProtectHome=yes
 ProtectHostname=yes
 ProtectKernelLogs=yes
 ProtectKernelModules=yes
-ProtectKernelTunables=yes
-ProtectSystem=strict
-# `ProtectSystem=strict` makes the entire filesystem read-only, and a child
-# process inherits that mount namespace -- so this list is what `vzdump` and
-# `qmrestore` write through, not just the agent itself. Without it an install
-# fails with "Read-only file system (os error 30)" after downloading the whole
-# artifact, and an export fails before writing a byte.
-#
-#   /var/lib/vz        template_temp_dir, export_dir and the image store the
-#                      restore lands in
-#   /var/run/qemu-server  the chardev sockets the serial console attaches to
-#   /etc/pve           the cluster filesystem `qm` writes guest configs into
-#   /var/log/pve       `vzdump` refuses to start without its task log, and the
-#                      failure names the log rather than the archive
-#   /run/lock          the guest locks `vzdump` and `qmrestore` take
-#   /var/log/vzdump    vzdump's own per-guest log, which is separate from the
-#                      PVE task log above and fails the backup on its own
-ReadWritePaths=/var/lib/vz /var/run/qemu-server /etc/pve /var/log/pve /var/log/vzdump /run/lock
-# AF_NETLINK is not optional here: attaching the guest's tap interface to its
-# bridge goes through netlink, and without it the bridge script fails with a
-# bare "interface activation failed" that names neither the socket nor this
-# line.
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes
 SystemCallArchitectures=native
 
+# Relaxed: the PVE tools need a little of root's ordinary authority.
+#
+#   CAP_CHOWN, CAP_FOWNER   PVE chowns its task logs to www-data; without this
+#                           vzdump dies mid-run and cannot even unlink the
+#                           half-written log it has just made
+#   CAP_DAC_OVERRIDE        writing into /var/log/pve and /etc/pve
+#   CAP_SETUID, CAP_SETGID  PVE tooling drops privileges as it works
+#   CAP_NET_ADMIN           QEMU creates the guest's tap interface; without it
+#                           /dev/net/tun opens and then refuses to configure
+#
+# Narrow rather than empty, but not mistaken for a strong boundary: this service
+# runs as root:root with write access to /etc/pve.
+AmbientCapabilities=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETUID CAP_SETGID CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETUID CAP_SETGID CAP_NET_ADMIN
+
+# Relaxed: a private /dev holds pseudo devices only, and backing a guest up
+# means starting QEMU. /dev/kvm is needed first -- the failure reads "KVM
+# virtualisation configured, but not available", which sounds like a BIOS
+# problem -- then /dev/net/tun for the guest's NIC, with /dev/vhost-net and loop
+# devices behind those depending on the storage. Binding them one at a time is a
+# queue of identical bugs, each found during somebody's migration.
+PrivateDevices=no
+
+# Relaxed: attaching a guest's tap to its bridge writes kernel tunables.
+# PVE::Network sets /proc/sys/net/ipv6/conf/<iface>/disable_ipv6 and
+# /sys/class/net/<iface>/brport/{unicast_flood,learning}. Read-only, the bridge
+# script exits 30 and QEMU reports only "interface activation failed".
+ProtectKernelTunables=no
+
+# Kept strict, with every path the tools genuinely write named explicitly. This
+# list is what vzdump and qmrestore write through, not just the agent.
+#
+#   /var/lib/vz           template_temp_dir, export_dir, and the image store a
+#                         restore lands in
+#   /var/run/qemu-server  the chardev sockets the serial console attaches to
+#   /etc/pve              the cluster filesystem `qm` writes guest configs into
+#   /var/log/pve          vzdump refuses to start without its task log, and
+#                         reports the log rather than the archive
+#   /var/log/vzdump       vzdump's own per-guest log, separate from the above
+#                         and fatal on its own
+#   /run/lock             the guest locks vzdump and qmrestore take
+ProtectSystem=strict
+ReadWritePaths=/var/lib/vz /var/run/qemu-server /etc/pve /var/log/pve /var/log/vzdump /run/lock
+
+# Relaxed: AF_NETLINK is how a network interface is configured. Without it the
+# bridge script fails with a message naming neither the socket nor this line.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+
 [Install]
 WantedBy=multi-user.target
-
