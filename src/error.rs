@@ -18,6 +18,23 @@ pub enum Error {
     InvalidMode(String),
     #[error("console process failed: {0}")]
     Console(String),
+    #[error("template installs are disabled on this Anchor")]
+    TemplatesDisabled,
+    #[error("guest exports are disabled on this Anchor")]
+    ExportsDisabled,
+    #[error("no such template job")]
+    UnknownJob,
+    #[error("no such artifact")]
+    UnknownArtifact,
+    #[error("the template install was cancelled")]
+    TemplateCancelled,
+    /// Carries the operational failures of both pipelines: a taken VMID, a
+    /// `qmrestore` that exited non-zero, a `vzdump` that did the same. The
+    /// message is written for an admin to read verbatim.
+    #[error("{0}")]
+    Template(String),
+    #[error("could not read the Proxmox API schema: {0}")]
+    Schema(String),
     #[error("health check failed with HTTP {0}")]
     Health(reqwest::StatusCode),
     #[error(transparent)]
@@ -44,11 +61,23 @@ impl IntoResponse for Error {
     fn into_response(self) -> axum::response::Response {
         let status = match self {
             Self::InvalidSession | Self::InvalidAudience => StatusCode::UNAUTHORIZED,
-            Self::UnsupportedProtocol(_) | Self::InvalidMode(_) => StatusCode::BAD_REQUEST,
+            Self::UnsupportedProtocol(_) | Self::InvalidMode(_) | Self::Template(_) => {
+                StatusCode::BAD_REQUEST
+            }
+            // The panel can act on this one: it names a file this node does not
+            // have, which is a packaging problem an admin can fix.
+            Self::Schema(_) => StatusCode::NOT_IMPLEMENTED,
+            Self::UnknownJob | Self::UnknownArtifact => StatusCode::NOT_FOUND,
+            Self::TemplatesDisabled | Self::ExportsDisabled => StatusCode::CONFLICT,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
+
+        // A 500 is a bug or a broken node, and its detail is for Anchor's log,
+        // not the caller. Everything else is a verdict the panel needs to be
+        // able to show an admin verbatim — "VMID 4001 is already in use" is
+        // only actionable if it survives the trip.
         let message = if status == StatusCode::INTERNAL_SERVER_ERROR {
-            "Anchor could not start this console session".to_owned()
+            "Anchor could not complete this request".to_owned()
         } else {
             self.to_string()
         };
