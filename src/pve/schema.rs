@@ -31,9 +31,8 @@ pub struct QemuCreateSchema {
 }
 
 pub fn load(apidoc_path: &str) -> Result<QemuCreateSchema> {
-    let raw = std::fs::read_to_string(apidoc_path).map_err(|error| {
-        Error::Schema(format!("could not read {apidoc_path}: {error}"))
-    })?;
+    let raw = std::fs::read_to_string(apidoc_path)
+        .map_err(|error| Error::Schema(format!("could not read {apidoc_path}: {error}")))?;
 
     parse(&raw)
 }
@@ -56,7 +55,9 @@ pub fn parse(raw: &str) -> Result<QemuCreateSchema> {
         .map_err(|error| Error::Schema(format!("malformed API documentation: {error}")))?;
 
     let node = find(&tree, QEMU_CREATE_PATH).ok_or_else(|| {
-        Error::Schema(format!("{QEMU_CREATE_PATH} is missing from the API documentation"))
+        Error::Schema(format!(
+            "{QEMU_CREATE_PATH} is missing from the API documentation"
+        ))
     })?;
 
     let properties = node
@@ -65,9 +66,7 @@ pub fn parse(raw: &str) -> Result<QemuCreateSchema> {
         .and_then(|post| post.get("parameters"))
         .and_then(|parameters| parameters.get("properties"))
         .and_then(Value::as_object)
-        .ok_or_else(|| {
-            Error::Schema(format!("{QEMU_CREATE_PATH} declares no POST parameters"))
-        })?;
+        .ok_or_else(|| Error::Schema(format!("{QEMU_CREATE_PATH} declares no POST parameters")))?;
 
     Ok(QemuCreateSchema {
         parameters: properties
@@ -89,7 +88,8 @@ fn find<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
                 return Some(value);
             }
 
-            node.get("children").and_then(|children| find(children, path))
+            node.get("children")
+                .and_then(|children| find(children, path))
         }
         _ => None,
     }
