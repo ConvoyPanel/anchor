@@ -1,14 +1,10 @@
-use std::{path::PathBuf, process::Stdio, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
 use futures_util::StreamExt;
 use sha2::{Digest, Sha256};
-use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    process::Command,
-    sync::Notify,
-};
+use tokio::{io::AsyncWriteExt, process::Command, sync::Notify};
 
-use super::{JobStatus, Jobs, vmid};
+use super::{JobStatus, Jobs, command::run as run_command, vmid};
 use crate::{Error, Result, protocol::InstallSpec};
 
 /// How many times a download is re-attempted before the job fails. Artifacts
@@ -268,74 +264,6 @@ async fn qm(jobs: &Jobs, args: &[&str], cancel: &Notify) -> Result<()> {
     command.args(args);
 
     run_command(&program, command, cancel, |_| {}).await
-}
-
-/// Run a Proxmox CLI tool to completion, feeding each stdout line to `on_line`.
-async fn run_command(
-    program: &str,
-    mut command: Command,
-    cancel: &Notify,
-    mut on_line: impl FnMut(&str),
-) -> Result<()> {
-    command
-        .kill_on_drop(true)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-
-    let mut child = command
-        .spawn()
-        .map_err(|error| Error::Template(format!("could not execute {program}: {error}")))?;
-
-    let stdout = child.stdout.take().expect("child stdout is piped");
-    let mut stderr = child.stderr.take().expect("child stderr is piped");
-
-    // Drain stderr concurrently: a child that fills the pipe buffer would block
-    // on its next write and wedge the install, and this keeps its diagnostics
-    // available for the failure message.
-    let stderr_task = tokio::spawn(async move {
-        let mut message = String::new();
-        let _ = stderr.read_to_string(&mut message).await;
-        message
-    });
-
-    let mut lines = BufReader::new(stdout).lines();
-    let cancelled = cancel.notified();
-    tokio::pin!(cancelled);
-    let mut interrupted = false;
-
-    loop {
-        let line = tokio::select! {
-            biased;
-            () = &mut cancelled => {
-                let _ = child.start_kill();
-                interrupted = true;
-                break;
-            }
-            line = lines.next_line() => line?,
-        };
-
-        let Some(line) = line else { break };
-        on_line(&line);
-    }
-
-    let status = child.wait().await?;
-    let stderr_output = stderr_task.await.unwrap_or_default();
-
-    if interrupted {
-        return Err(Error::TemplateCancelled);
-    }
-
-    if !status.success() {
-        let detail = stderr_output.trim();
-        return Err(Error::Template(if detail.is_empty() {
-            format!("{program} exited with {status}")
-        } else {
-            format!("{program} failed: {detail}")
-        }));
-    }
-
-    Ok(())
 }
 
 /// Pull the percentage out of a `qmrestore` progress line, e.g.
