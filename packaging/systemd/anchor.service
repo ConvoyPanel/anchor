@@ -38,7 +38,10 @@ ProtectSystem=strict
 #                      restore lands in
 #   /var/run/qemu-server  the chardev sockets the serial console attaches to
 #   /etc/pve           the cluster filesystem `qm` writes guest configs into
-ReadWritePaths=/var/lib/vz /var/run/qemu-server /etc/pve
+#   /var/log/pve       `vzdump` refuses to start without its task log, and the
+#                      failure names the log rather than the archive
+#   /run/lock          the guest locks `vzdump` and `qmrestore` take
+ReadWritePaths=/var/lib/vz /var/run/qemu-server /etc/pve /var/log/pve /run/lock
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictNamespaces=yes
 RestrictRealtime=yes
