@@ -24,12 +24,14 @@ Group=root
 #   CAP_CHOWN, CAP_FOWNER   PVE chowns its task logs to www-data
 #   CAP_DAC_OVERRIDE        writing into /var/log/pve and /etc/pve
 #   CAP_SETUID, CAP_SETGID  PVE tooling drops privileges as it works
+#   CAP_NET_ADMIN           QEMU creates the guest's tap interface; without it
+#                           /dev/net/tun opens and then refuses to configure
 #
 # This is less of a reduction than it looks: the unit already runs the agent as
 # root:root with write access to /etc/pve, so an empty set was mostly
 # decorative -- and it silently broke template installs, not just migration.
-AmbientCapabilities=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETUID CAP_SETGID
-CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETUID CAP_SETGID
+AmbientCapabilities=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETUID CAP_SETGID CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETUID CAP_SETGID CAP_NET_ADMIN
 LockPersonality=yes
 NoNewPrivileges=yes
 # NOT PrivateDevices. This unit was written as though Anchor were an ordinary
@@ -66,7 +68,11 @@ ProtectSystem=strict
 #   /var/log/vzdump    vzdump's own per-guest log, which is separate from the
 #                      PVE task log above and fails the backup on its own
 ReadWritePaths=/var/lib/vz /var/run/qemu-server /etc/pve /var/log/pve /var/log/vzdump /run/lock
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# AF_NETLINK is not optional here: attaching the guest's tap interface to its
+# bridge goes through netlink, and without it the bridge script fails with a
+# bare "interface activation failed" that names neither the socket nor this
+# line.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 RestrictNamespaces=yes
 RestrictRealtime=yes
 RestrictSUIDSGID=yes

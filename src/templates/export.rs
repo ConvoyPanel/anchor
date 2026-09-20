@@ -160,7 +160,16 @@ async fn vzdump(
         .arg("--mode")
         .arg(spec.mode.vzdump_arg())
         .arg("--compress")
-        .arg(spec.compress.vzdump_arg());
+        .arg(spec.compress.vzdump_arg())
+        // Send nobody an email. `legacy-sendmail` with no `--mailto` is how
+        // vzdump is told to notify no one; the default reaches for PVE's
+        // notification system, and on a hardened unit `postdrop` cannot write
+        // to the mail queue and retries forever -- the backup then never
+        // finishes and the task log fills with mail-queue warnings rather than
+        // anything about the archive. An export the panel drove is not an event
+        // an operator subscribed to anyway.
+        .arg("--notification-mode")
+        .arg("legacy-sendmail");
 
     match (&spec.storage, dumpdir) {
         (Some(storage), _) => {
