@@ -14,8 +14,22 @@ RestartSec=5s
 User=root
 Group=root
 
-AmbientCapabilities=
-CapabilityBoundingSet=
+# Narrowly granted rather than empty. This agent's job is to invoke `qm`,
+# `vzdump` and `qmrestore`, and those need a little of root's ordinary
+# authority: with an empty bounding set `vzdump` dies part-way through trying
+# to chown its own task log to www-data ("Operation not permitted"), then
+# cannot unlink the half-written log it just made. Each entry is here for a
+# named reason and nothing broader is granted.
+#
+#   CAP_CHOWN, CAP_FOWNER   PVE chowns its task logs to www-data
+#   CAP_DAC_OVERRIDE        writing into /var/log/pve and /etc/pve
+#   CAP_SETUID, CAP_SETGID  PVE tooling drops privileges as it works
+#
+# This is less of a reduction than it looks: the unit already runs the agent as
+# root:root with write access to /etc/pve, so an empty set was mostly
+# decorative -- and it silently broke template installs, not just migration.
+AmbientCapabilities=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETUID CAP_SETGID
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETUID CAP_SETGID
 LockPersonality=yes
 NoNewPrivileges=yes
 PrivateDevices=yes
