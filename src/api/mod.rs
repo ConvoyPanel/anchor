@@ -55,10 +55,17 @@ pub const TEMPLATE_CAPABILITY: &str = "templates.install";
 /// agent advertises it unconditionally and the panel falls back to its own
 /// bundled copy only when a node cannot answer.
 pub const SCHEMA_CAPABILITY: &str = "pve.schema";
-/// This node can be the *source* of a migration. The destination side needs
-/// nothing new — it restores a URL, which is all `templates.install` ever did —
-/// so only the source half is advertised.
+/// This node can be the *source* of a migration.
 pub const EXPORT_CAPABILITY: &str = "migration.export";
+/// This node can be the *destination* of a migration.
+///
+/// It restores a URL, which is all `templates.install` ever did, so this looked
+/// at first like it needed no capability of its own. It does: a migration sends
+/// `finalize_as_template: false`, and an agent old enough to lack that field
+/// silently defaults it to true and converts the tenant's guest into a template
+/// that cannot be started. The panel must be able to tell those agents apart
+/// before it moves anyone's machine, and a missing capability is how.
+pub const MIGRATION_INSTALL_CAPABILITY: &str = "migration.install";
 pub const RELAY_CAPABILITIES: &[&str] = &["console.relay"];
 
 /// What this installation can actually do.
@@ -74,6 +81,9 @@ fn capabilities(config: &Config) -> Vec<&'static str> {
             capabilities.push(SCHEMA_CAPABILITY);
             if config.agent.templates_enabled {
                 capabilities.push(TEMPLATE_CAPABILITY);
+                // Same pipeline, but only an agent that honours
+                // `finalize_as_template` may receive a migration.
+                capabilities.push(MIGRATION_INSTALL_CAPABILITY);
                 if config.agent.exports_enabled {
                     capabilities.push(EXPORT_CAPABILITY);
                 }
@@ -659,6 +669,41 @@ mod tests {
                 .unwrap()
                 .contains(&json!(EXPORT_CAPABILITY))
         );
+    }
+
+    /// The destination half is a capability rather than an assumption because an
+    /// agent that predates `finalize_as_template` silently defaults it to true
+    /// and turns the tenant's guest into an unstartable template. The panel has
+    /// to be able to refuse such an agent before it moves anyone's machine.
+    #[tokio::test]
+    async fn advertises_the_migration_install_capability() {
+        let response = router(config(Mode::Agent))
+            .oneshot(Request::get("/api/v1/info").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        let body: serde_json::Value = serde_json::from_slice(&body_of(response).await).unwrap();
+        assert!(
+            body["capabilities"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(MIGRATION_INSTALL_CAPABILITY))
+        );
+    }
+
+    #[tokio::test]
+    async fn hides_the_migration_install_capability_without_the_install_pipeline() {
+        let mut config = config(Mode::Agent);
+        config.agent.templates_enabled = false;
+
+        let response = router(config)
+            .oneshot(Request::get("/api/v1/info").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        let body: serde_json::Value = serde_json::from_slice(&body_of(response).await).unwrap();
+        let capabilities = body["capabilities"].as_array().unwrap();
+        assert!(!capabilities.contains(&json!(MIGRATION_INSTALL_CAPABILITY)));
     }
 
     #[tokio::test]

@@ -388,6 +388,7 @@ mod tests {
             vmid: 4001,
             storage: "local".into(),
             overwrite: false,
+            finalize_as_template: true,
         }
     }
 

@@ -67,10 +67,18 @@ async fn install(
     }
     qmrestore(jobs, id, spec, cancel, archive).await?;
 
-    // Cofoundry vzdumps a stopped VM, not a template — coport's users clone by
+    // Cofoundry vzdumps a stopped VM, not a template -- coport's users clone by
     // hand so it never mattered there. Convoy only offers guests that report
-    // `template: 1`, so without this the install would appear to succeed and
-    // then be invisible in the panel.
+    // `template: 1`, so without this an import would appear to succeed and then
+    // be invisible in the panel.
+    //
+    // A migration restores the tenant's own guest and must NOT do this: a
+    // templated guest cannot be started, so the migration would report success
+    // and leave the customer with a machine that will not boot.
+    if !spec.finalize_as_template {
+        return Ok(());
+    }
+
     jobs.advance(id, JobStatus::Finalizing);
     qm(jobs, &["template", &spec.vmid.to_string()], cancel).await
 }
@@ -291,6 +299,7 @@ mod tests {
             vmid: 4001,
             storage: "local".into(),
             overwrite: false,
+            finalize_as_template: true,
         }
     }
 

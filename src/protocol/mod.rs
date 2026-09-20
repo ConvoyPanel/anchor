@@ -190,6 +190,22 @@ pub struct InstallSpec {
     /// Restore over an existing guest at this VMID instead of refusing.
     #[serde(default)]
     pub overwrite: bool,
+    /// Convert the restored guest into a template when the restore finishes.
+    ///
+    /// True for an image import, which is the only thing this pipeline used to
+    /// serve: Convoy offers a guest only when it reports `template: 1`, so an
+    /// import that skipped this would appear to succeed and then be invisible.
+    ///
+    /// A migration needs the opposite. The restored guest is the tenant's own
+    /// machine and templating it would leave them with something that cannot be
+    /// started, so the panel sends `false`. Defaults to true, which keeps every
+    /// existing import caller correct without changing what it sends.
+    #[serde(default = "default_finalize_as_template")]
+    pub finalize_as_template: bool,
+}
+
+fn default_finalize_as_template() -> bool {
+    true
 }
 
 /// Claims on a schema-read token.
@@ -291,6 +307,31 @@ pub fn now() -> u64 {
 
 #[cfg(test)]
 mod tests {
+    /// An import that never heard of this field must keep templating, or every
+    /// existing caller silently starts producing guests Convoy will not offer.
+    #[test]
+    fn an_install_spec_without_the_field_still_templates() {
+        let spec: InstallSpec = serde_json::from_str(
+            r#"{"name":"debian-12","url":"https://example.invalid/a.vma.zst",
+                "sha256":"ab","vmid":900,"storage":"local"}"#,
+        )
+        .expect("spec parses");
+
+        assert!(spec.finalize_as_template);
+    }
+
+    /// A migration says so explicitly, and must be taken at its word.
+    #[test]
+    fn a_migration_install_spec_opts_out_of_templating() {
+        let spec: InstallSpec = serde_json::from_str(
+            r#"{"name":"guest-101","url":"https://example.invalid/a.vma.zst",
+                "sha256":"ab","vmid":901,"storage":"local","finalize_as_template":false}"#,
+        )
+        .expect("spec parses");
+
+        assert!(!spec.finalize_as_template);
+    }
+
     use std::net::SocketAddr;
 
     use jsonwebtoken::{EncodingKey, Header, encode};
