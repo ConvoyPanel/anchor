@@ -32,7 +32,15 @@ AmbientCapabilities=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETUID CAP_SETGID
 CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_SETUID CAP_SETGID
 LockPersonality=yes
 NoNewPrivileges=yes
-PrivateDevices=yes
+# NOT PrivateDevices. This unit was written as though Anchor were an ordinary
+# network daemon; it is not, it starts QEMU. A private /dev holds pseudo devices
+# only, and `vzdump` needs a widening list of real ones to read a guest's disk:
+# /dev/kvm first ("KVM virtualisation configured, but not available", which
+# reads like a BIOS problem), then /dev/net/tun for the guest's NIC, and
+# /dev/vhost-net and loop devices behind those depending on the storage. Binding
+# them one at a time is a queue of identical bugs found one restore at a time,
+# in a service that already runs as root with write access to /etc/pve.
+PrivateDevices=no
 PrivateTmp=yes
 ProtectClock=yes
 ProtectControlGroups=yes
@@ -55,7 +63,9 @@ ProtectSystem=strict
 #   /var/log/pve       `vzdump` refuses to start without its task log, and the
 #                      failure names the log rather than the archive
 #   /run/lock          the guest locks `vzdump` and `qmrestore` take
-ReadWritePaths=/var/lib/vz /var/run/qemu-server /etc/pve /var/log/pve /run/lock
+#   /var/log/vzdump    vzdump's own per-guest log, which is separate from the
+#                      PVE task log above and fails the backup on its own
+ReadWritePaths=/var/lib/vz /var/run/qemu-server /etc/pve /var/log/pve /var/log/vzdump /run/lock
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictNamespaces=yes
 RestrictRealtime=yes
