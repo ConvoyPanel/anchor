@@ -846,6 +846,47 @@ mod tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
+    /// The destination downloads through the install pipeline, which fetches
+    /// `spec.url` with a bare GET and sets no headers -- it was built to pull
+    /// public CDN images. The URL is therefore the only channel the token has,
+    /// and a header-only check fails the real migration with a 401 while every
+    /// header-based test passes.
+    #[tokio::test]
+    async fn a_token_in_the_query_string_downloads() {
+        let (router, _dir, id, _) = node_with_artifact(b"payload").await;
+
+        let minted = token(json!({ "action": "fetch", "artifact": id }), "anchor_1");
+        let response = router
+            .oneshot(
+                Request::get(format!("/artifacts/{id}?token={minted}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_of(response).await, b"payload");
+    }
+
+    /// The query string is a second door, not a weaker one.
+    #[tokio::test]
+    async fn a_query_token_for_another_artifact_is_still_refused() {
+        let (router, _dir, id, _) = node_with_artifact(b"payload").await;
+        let other = Artifacts::allocate_id();
+
+        let minted = token(json!({ "action": "fetch", "artifact": other }), "anchor_1");
+        let status = status_of(
+            router,
+            Request::get(format!("/artifacts/{id}?token={minted}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
     #[tokio::test]
     async fn downloading_requires_a_bearer_token() {
         let (router, _dir, id, _) = node_with_artifact(b"payload").await;

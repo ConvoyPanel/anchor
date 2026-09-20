@@ -3,7 +3,7 @@ use std::io;
 use axum::{
     Json,
     body::{Body, Bytes},
-    extract::{Path as UrlPath, State},
+    extract::{Path as UrlPath, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -47,9 +47,10 @@ enum Requested {
 pub async fn download(
     State(state): State<AppState>,
     UrlPath(id): UrlPath<String>,
+    Query(query): Query<TokenQuery>,
     headers: HeaderMap,
 ) -> Result<Response> {
-    let artifact = authorise(&state, &headers, &id, Access::Fetch)?;
+    let artifact = authorise(&state, &headers, query.token.as_deref(), &id, Access::Fetch)?;
 
     let mut file = tokio::fs::File::open(&artifact.path)
         .await
@@ -104,9 +105,16 @@ pub async fn download(
 pub async fn discard(
     State(state): State<AppState>,
     UrlPath(id): UrlPath<String>,
+    Query(query): Query<TokenQuery>,
     headers: HeaderMap,
 ) -> Result<Json<serde_json::Value>> {
-    let artifact = authorise(&state, &headers, &id, Access::Discard)?;
+    let artifact = authorise(
+        &state,
+        &headers,
+        query.token.as_deref(),
+        &id,
+        Access::Discard,
+    )?;
     state.jobs.artifacts().discard(&artifact.id).await?;
 
     tracing::info!(artifact = artifact.id, "artifact discarded");
@@ -122,6 +130,19 @@ enum Access {
     Discard,
 }
 
+/// The token, when it arrives in the URL rather than a header.
+///
+/// It has to be allowed there. The destination downloads an artifact through
+/// the install pipeline, which fetches `spec.url` with a bare GET and sets no
+/// headers -- it was built to pull public CDN images and has nowhere to put a
+/// bearer token. The URL is the only channel, so a query token is the normal
+/// case here and the header is the convenience.
+#[derive(serde::Deserialize)]
+pub struct TokenQuery {
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
 /// Check the token, then resolve the id.
 ///
 /// In that order, and it matters: resolving first would let anyone with no
@@ -132,8 +153,21 @@ enum Access {
 /// download artifact A cannot be replayed against artifact B, and a `Fetch`
 /// token cannot delete anything. Neither is a bearer token for the dump
 /// directory: an id that is not in the registry resolves to nothing at all.
-fn authorise(state: &AppState, headers: &HeaderMap, id: &str, access: Access) -> Result<Artifact> {
-    let claims = decode_template(bearer(headers)?, &state.config)?;
+fn authorise(
+    state: &AppState,
+    headers: &HeaderMap,
+    query_token: Option<&str>,
+    id: &str,
+    access: Access,
+) -> Result<Artifact> {
+    // Header first so an ordinary API caller behaves like every other route,
+    // then the query string, which is how the install pipeline must send it.
+    let token = match bearer(headers) {
+        Ok(token) => token.to_owned(),
+        Err(error) => query_token.map(str::to_owned).ok_or(error)?,
+    };
+
+    let claims = decode_template(&token, &state.config)?;
     ensure_agent(state)?;
 
     let named = match (&claims.template, access) {
