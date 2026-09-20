@@ -28,6 +28,17 @@ ProtectKernelLogs=yes
 ProtectKernelModules=yes
 ProtectKernelTunables=yes
 ProtectSystem=strict
+# `ProtectSystem=strict` makes the entire filesystem read-only, and a child
+# process inherits that mount namespace -- so this list is what `vzdump` and
+# `qmrestore` write through, not just the agent itself. Without it an install
+# fails with "Read-only file system (os error 30)" after downloading the whole
+# artifact, and an export fails before writing a byte.
+#
+#   /var/lib/vz        template_temp_dir, export_dir and the image store the
+#                      restore lands in
+#   /var/run/qemu-server  the chardev sockets the serial console attaches to
+#   /etc/pve           the cluster filesystem `qm` writes guest configs into
+ReadWritePaths=/var/lib/vz /var/run/qemu-server /etc/pve
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 RestrictNamespaces=yes
 RestrictRealtime=yes
