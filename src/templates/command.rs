@@ -63,12 +63,20 @@ pub async fn run(
         on_line(&line);
     }
 
-    let status = child.wait().await?;
-    let stderr_output = stderr_task.await.unwrap_or_default();
-
     if interrupted {
+        // Reap the child, but do not wait on its stderr. Any grandchild it
+        // spawned inherited that pipe, so `read_to_string` sees no EOF until
+        // the last of them exits — and a `vzdump` killed mid-dump readily
+        // leaves one behind. Waiting would hold the job in its running phase
+        // long after the cancel was acknowledged, which is exactly the hang a
+        // cancel is meant to end. A cancelled job's stderr is not wanted.
+        stderr_task.abort();
+        let _ = child.wait().await;
         return Err(Error::TemplateCancelled);
     }
+
+    let status = child.wait().await?;
+    let stderr_output = stderr_task.await.unwrap_or_default();
 
     if !status.success() {
         let detail = stderr_output.trim();
@@ -80,4 +88,84 @@ pub async fn run(
     }
 
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::{sync::Arc, time::Duration};
+
+    use super::*;
+
+    async fn script(dir: &std::path::Path, body: &str) -> String {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = dir.join("tool");
+        tokio::fs::write(&path, format!("#!/bin/sh\n{body}\n"))
+            .await
+            .unwrap();
+        tokio::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))
+            .await
+            .unwrap();
+
+        path.display().to_string()
+    }
+
+    #[tokio::test]
+    async fn reads_stdout_and_reports_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = script(dir.path(), "echo one\necho two\nexit 0").await;
+        let mut lines = Vec::new();
+
+        run(&program, Command::new(&program), &Notify::new(), |line| {
+            lines.push(line.to_owned())
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(lines, ["one", "two"]);
+    }
+
+    #[tokio::test]
+    async fn carries_a_failing_tools_stderr_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = script(dir.path(), "echo 'it went wrong' >&2\nexit 3").await;
+
+        let error = run(&program, Command::new(&program), &Notify::new(), |_| {})
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("it went wrong"), "{error}");
+    }
+
+    /// The regression this guards: a cancelled tool whose *grandchild* still
+    /// holds the stderr pipe must not keep the job running until that
+    /// grandchild exits.
+    #[tokio::test]
+    async fn cancelling_returns_even_when_a_grandchild_holds_the_pipe() {
+        let dir = tempfile::tempdir().unwrap();
+        let program = script(dir.path(), "echo started\nsleep 120\nexit 0").await;
+        let cancel = Arc::new(Notify::new());
+
+        let waiter = Arc::clone(&cancel);
+        let task = tokio::spawn({
+            let program = program.clone();
+            async move { run(&program, Command::new(&program), &waiter, |_| {}).await }
+        });
+
+        // Keep asking until it lands; `Notify` only wakes waiters already
+        // registered, and the runner registers on its first poll.
+        let outcome = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                cancel.notify_waiters();
+                if task.is_finished() {
+                    break task.await.unwrap();
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("cancelling must not wait for the grandchild");
+
+        assert!(matches!(outcome, Err(Error::TemplateCancelled)));
+    }
 }
