@@ -88,11 +88,18 @@ async fn serve(path: PathBuf) -> Result<()> {
     // Template jobs do not survive a restart, so anything still in the scratch
     // directory is an orphaned partial download sitting on the dump volume.
     jobs.sweep_temp_dir().await;
+    // Same reasoning for exports, which are larger still: the registry that
+    // made them reachable is gone, so whatever is left is unreachable.
+    jobs.artifacts().clear_root().await;
+    // Nothing else deletes an artifact whose migration failed before the panel
+    // got as far as `Discard`.
+    let sweeper = tokio::spawn(jobs.artifacts().clone().run_sweeper());
 
     axum::serve(listener, router.into_make_service())
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     heartbeat.abort();
+    sweeper.abort();
 
     Ok(())
 }
