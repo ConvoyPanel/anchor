@@ -77,7 +77,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        api::{EXPORT_CAPABILITY, RELAY_CAPABILITIES, TEMPLATE_CAPABILITY},
+        api::{EXPORT_CAPABILITY, RELAY_CAPABILITIES, SNIPPETS_CAPABILITY, TEMPLATE_CAPABILITY},
         config::AgentConfig,
     };
 
@@ -99,16 +99,19 @@ mod tests {
 
         assert!(capabilities.contains(&TEMPLATE_CAPABILITY));
         assert!(capabilities.contains(&EXPORT_CAPABILITY));
+        assert!(capabilities.contains(&SNIPPETS_CAPABILITY));
     }
 
     #[test]
     fn withdraws_what_the_configuration_switches_off() {
         let mut config = config(Mode::Agent);
         config.agent.exports_enabled = false;
+        config.agent.snippets_enabled = false;
 
         let capabilities = heartbeat(&config).capabilities;
 
         assert!(!capabilities.contains(&EXPORT_CAPABILITY));
+        assert!(!capabilities.contains(&SNIPPETS_CAPABILITY));
         assert!(capabilities.contains(&TEMPLATE_CAPABILITY));
     }
 

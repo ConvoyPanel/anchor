@@ -35,6 +35,24 @@ pub enum Error {
     Template(String),
     #[error("could not read the Proxmox API schema: {0}")]
     Schema(String),
+    #[error("provisioner snippets are disabled on this Anchor")]
+    SnippetsDisabled,
+    /// A snippet request refused for what it asked for: a name outside the
+    /// `convoy-*.yaml` namespace, or a body that is not the one the token was
+    /// minted for.
+    #[error("{0}")]
+    InvalidSnippet(String),
+    /// The storage a snippet token names cannot hold one on this node: not a
+    /// storage id, not active here, without the `snippets` content type, or
+    /// resolving the file somewhere it has no business being.
+    #[error("{0}")]
+    SnippetStorage(String),
+    #[error("the snippet is larger than the {0}-byte limit")]
+    SnippetTooLarge(usize),
+    /// `pvesm` could not be run or failed outright. Not the storage's fault but
+    /// the node's, so it is a 500 and its detail goes to the log.
+    #[error("{0}")]
+    Pvesm(String),
     #[error("health check failed with HTTP {0}")]
     Health(reqwest::StatusCode),
     #[error(transparent)]
@@ -61,14 +79,19 @@ impl IntoResponse for Error {
     fn into_response(self) -> axum::response::Response {
         let status = match self {
             Self::InvalidSession | Self::InvalidAudience => StatusCode::UNAUTHORIZED,
-            Self::UnsupportedProtocol(_) | Self::InvalidMode(_) | Self::Template(_) => {
-                StatusCode::BAD_REQUEST
-            }
+            Self::UnsupportedProtocol(_)
+            | Self::InvalidMode(_)
+            | Self::Template(_)
+            | Self::InvalidSnippet(_) => StatusCode::BAD_REQUEST,
             // The panel can act on this one: it names a file this node does not
             // have, which is a packaging problem an admin can fix.
             Self::Schema(_) => StatusCode::NOT_IMPLEMENTED,
             Self::UnknownJob | Self::UnknownArtifact => StatusCode::NOT_FOUND,
-            Self::TemplatesDisabled | Self::ExportsDisabled => StatusCode::CONFLICT,
+            Self::TemplatesDisabled
+            | Self::ExportsDisabled
+            | Self::SnippetsDisabled
+            | Self::SnippetStorage(_) => StatusCode::CONFLICT,
+            Self::SnippetTooLarge(_) => StatusCode::PAYLOAD_TOO_LARGE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
 

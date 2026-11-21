@@ -6,6 +6,7 @@ mod error;
 mod panel;
 mod protocol;
 mod pve;
+mod snippets;
 mod templates;
 
 pub use error::{Error, Result};
