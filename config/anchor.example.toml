@@ -7,4 +7,43 @@ panel_url = "https://panel.example.com"
 public_url = "https://anchor.example.com"
 
 [agent]
+# Used for the display console, which needs Proxmox to install a one-time
+# VNC password. The serial console attaches to the guest's chardev socket
+# directly and does not go through `qm`.
 qm_path = "/usr/sbin/qm"
+qemu_config_dir = "/etc/pve/qemu-server"
+qemu_run_dir = "/var/run/qemu-server"
+
+# Installing VM templates the panel imports from Cofoundry. Each install
+# downloads a multi-gigabyte .vma.zst into `template_temp_dir`, verifies its
+# SHA-256, restores it with `qmrestore`, and converts the result into a
+# template. Set `templates_enabled = false` to keep this agent console-only;
+# the capability then disappears from /api/v1/info and the panel leaves the
+# node out of imports.
+qmrestore_path = "/usr/sbin/qmrestore"
+# Read to learn which VMIDs the cluster already uses, so a collision is caught
+# before the download rather than by `qmrestore` after it.
+pve_dir = "/etc/pve"
+template_temp_dir = "/var/lib/vz/dump/anchor-tmp"
+templates_enabled = true
+# Concurrent installs. This is a disk budget as much as a CPU one — each one
+# holds a full artifact on the dump volume while it restores.
+template_concurrency = 2
+
+# Exporting a guest so another node can take it over. The panel stops the
+# guest, asks for an export, hands the destination node a URL onto
+# `GET /artifacts/{id}` here, and discards the artifact once the destination
+# is verified. Exports share `template_concurrency` with installs, because a
+# `vzdump` costs this node the same disk and the same I/O as a `qmrestore`.
+# Set `exports_enabled = false` to make this node an import-only destination;
+# the `migration.export` capability then disappears from /api/v1/info.
+vzdump_path = "/usr/bin/vzdump"
+exports_enabled = true
+# Where an export lands when the request names no storage. Anchor owns this
+# directory outright and clears it at startup, so it never has to reason about
+# an admin's own backups.
+export_dir = "/var/lib/vz/dump/anchor-exports"
+# How long a finished artifact survives before it is swept, whether or not any
+# migration claimed it. This is the answer to a multi-gigabyte file nobody
+# deletes, so it is a ceiling and not a hint.
+export_ttl_secs = 86400
