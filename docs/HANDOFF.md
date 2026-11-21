@@ -67,7 +67,7 @@ The storage must be active on this node in `pvesm status --content snippets`, an
 
 Status codes: `401` for the token, `400` for a bad name or a body that does not match its digest, `409` when `agent.snippets_enabled` is off or the storage cannot hold snippets, `413` over 1 MiB, `500` when `pvesm` itself cannot be run. The capability is `provisioning.snippets`, reported in `/api/v1/info` and the heartbeat.
 
-A storage with `content-dirs` pointing snippets at a directory not called `snippets` is refused. Not yet exercised against a live node.
+The hardened unit can write `/var/lib/vz` and `/mnt/pve`. A directory storage mounted anywhere else needs a drop-in adding its path to `ReadWritePaths`. A storage with `content-dirs` pointing snippets at a directory not called `snippets` is refused. Not yet exercised against a live node.
 
 ## Current Implementation
 
