@@ -73,7 +73,10 @@ pub const RELAY_CAPABILITIES: &[&str] = &["console.relay"];
 /// Templates are advertised only when the agent is configured to install them,
 /// so the panel can leave a node out of an import rather than queueing work
 /// that is going to be refused.
-fn capabilities(config: &Config) -> Vec<&'static str> {
+///
+/// `/api/v1/info` and the heartbeat both answer from here, because the panel
+/// records whichever it heard from last.
+pub(crate) fn capabilities(config: &Config) -> Vec<&'static str> {
     match config.mode {
         Mode::Relay => RELAY_CAPABILITIES.to_vec(),
         Mode::Agent => {
