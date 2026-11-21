@@ -47,3 +47,16 @@ export_dir = "/var/lib/vz/dump/anchor-exports"
 # migration claimed it. This is the answer to a multi-gigabyte file nobody
 # deletes, so it is a ceiling and not a hint.
 export_ttl_secs = 86400
+
+# Writing the cloud-init snippets that carry a server's provisioner scripts.
+# Proxmox reads custom cloud-init only from a storage with the `snippets`
+# content type, and its API cannot upload one, so the panel hands the file to
+# Anchor: it lands wherever `pvesm path` says that storage keeps snippets,
+# mode 0600, and is deleted once the guest has run its scripts. Anchor only
+# ever touches files named `convoy-*.yaml`, never an admin's own snippets.
+# Set `snippets_enabled = false` and the `provisioning.snippets` capability
+# disappears; the panel then refuses provisioners on this node.
+snippets_enabled = true
+# Asked which storages are active with the `snippets` content type, and where
+# a snippet on one of them lives.
+pvesm_path = "/usr/sbin/pvesm"

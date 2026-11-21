@@ -81,8 +81,13 @@ ProtectKernelTunables=no
 # Kept strict, with every path the tools genuinely write named explicitly. This
 # list is what vzdump and qmrestore write through, not just the agent.
 #
-#   /var/lib/vz           template_temp_dir, export_dir, and the image store a
-#                         restore lands in
+#   /var/lib/vz           template_temp_dir, export_dir, the image store a
+#                         restore lands in, and the `local` storage's snippets
+#   -/mnt/pve             where PVE mounts network storages (NFS, CIFS,
+#                         CephFS), any of which can be the storage a
+#                         provisioner snippet is written to. `-` because a node
+#                         with only local storage has no such directory, and a
+#                         missing path would otherwise stop the unit starting
 #   /var/run/qemu-server  the chardev sockets the serial console attaches to
 #   /etc/pve              the cluster filesystem `qm` writes guest configs into
 #   /var/log/pve          vzdump refuses to start without its task log, and
@@ -90,8 +95,12 @@ ProtectKernelTunables=no
 #   /var/log/vzdump       vzdump's own per-guest log, separate from the above
 #                         and fatal on its own
 #   /run/lock             the guest locks vzdump and qmrestore take
+#
+# A directory storage at a path of its own (`/srv/vz`, say) is not covered, and
+# a snippet written to it fails as a read-only filesystem. Add that path with a
+# drop-in rather than loosening ProtectSystem.
 ProtectSystem=strict
-ReadWritePaths=/var/lib/vz /var/run/qemu-server /etc/pve /var/log/pve /var/log/vzdump /run/lock
+ReadWritePaths=/var/lib/vz -/mnt/pve /var/run/qemu-server /etc/pve /var/log/pve /var/log/vzdump /run/lock
 
 # Relaxed: AF_NETLINK is how a network interface is configured. Without it the
 # bridge script fails with a message naming neither the socket nor this line.

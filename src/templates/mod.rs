@@ -1,5 +1,5 @@
 mod artifacts;
-mod command;
+pub(crate) mod command;
 mod export;
 mod install;
 mod vmid;

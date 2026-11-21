@@ -236,6 +236,44 @@ pub enum SchemaRequest {
     QemuCreate,
 }
 
+/// Claims on a provisioner-snippet token.
+///
+/// Its own claim set, like [`TemplateClaims`] and [`SchemaClaims`]: the panel
+/// mints these for itself while it builds a server, never for a browser, and
+/// what they authorise is narrower than anything a template token can do --
+/// one file, in one storage, with one exact body.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct SnippetClaims {
+    pub iss: String,
+    pub sub: String,
+    pub aud: Audience,
+    pub exp: f64,
+    pub iat: f64,
+    pub jti: String,
+    pub protocol: u16,
+    pub snippet: SnippetAction,
+}
+
+/// What a snippet token authorises.
+///
+/// The work order is inside the token, so a captured `Write` can only ever put
+/// back the bytes it was minted for -- `sha256` pins the body -- and only into
+/// the one file it names. `Delete` is a separate action rather than a flag so a
+/// token minted to clean up cannot also write.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum SnippetAction {
+    Write {
+        storage: String,
+        name: String,
+        sha256: String,
+    },
+    Delete {
+        storage: String,
+        name: String,
+    },
+}
+
 /// Claim sets that carry the protocol version Anchor negotiates on.
 pub trait Protocolled {
     fn protocol(&self) -> u16;
@@ -259,6 +297,12 @@ impl Protocolled for SchemaClaims {
     }
 }
 
+impl Protocolled for SnippetClaims {
+    fn protocol(&self) -> u16 {
+        self.protocol
+    }
+}
+
 pub fn decode_session(token: &str, config: &Config) -> Result<SessionClaims> {
     decode_claims(token, config)
 }
@@ -268,6 +312,10 @@ pub fn decode_template(token: &str, config: &Config) -> Result<TemplateClaims> {
 }
 
 pub fn decode_schema(token: &str, config: &Config) -> Result<SchemaClaims> {
+    decode_claims(token, config)
+}
+
+pub fn decode_snippet(token: &str, config: &Config) -> Result<SnippetClaims> {
     decode_claims(token, config)
 }
 
@@ -489,6 +537,78 @@ mod tests {
         assert_eq!(ExportMode::Stop.vzdump_arg(), "stop");
         assert_eq!(Compression::None.archive_suffix(), ".vma");
         assert_eq!(Compression::Zstd.archive_suffix(), ".vma.zst");
+    }
+
+    fn snippet_token(action: serde_json::Value) -> String {
+        let claims = serde_json::json!({
+            "iss": "https://panel.example.com",
+            "sub": "panel",
+            "aud": "agent_1",
+            "exp": now() as i64 + 60,
+            "iat": now() as i64 - 1,
+            "jti": "token_1",
+            "protocol": PROTOCOL_MAX,
+            "snippet": action,
+        });
+
+        encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(config().secret.as_bytes()),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn a_snippet_write_carries_its_storage_name_and_digest() {
+        let token = snippet_token(serde_json::json!({
+            "action": "write",
+            "storage": "local",
+            "name": "convoy-provisioner-1.yaml",
+            "sha256": "ab".repeat(32),
+        }));
+
+        let SnippetAction::Write {
+            storage,
+            name,
+            sha256,
+        } = decode_snippet(&token, &config()).unwrap().snippet
+        else {
+            panic!("expected a write");
+        };
+        assert_eq!(storage, "local");
+        assert_eq!(name, "convoy-provisioner-1.yaml");
+        assert_eq!(sha256, "ab".repeat(32));
+    }
+
+    #[test]
+    fn a_snippet_delete_carries_no_digest() {
+        let token = snippet_token(serde_json::json!({
+            "action": "delete",
+            "storage": "local",
+            "name": "convoy-provisioner-1.yaml",
+        }));
+
+        assert!(matches!(
+            decode_snippet(&token, &config()).unwrap().snippet,
+            SnippetAction::Delete { .. }
+        ));
+    }
+
+    /// The claim sets do not stand in for one another: a template token signed
+    /// with the same secret is still not a snippet token.
+    #[test]
+    fn a_template_token_is_not_a_snippet_token() {
+        let token = template_token(
+            serde_json::json!({ "action": "fetch", "artifact": "artifact_1" }),
+            "agent_1",
+            60,
+        );
+
+        assert!(matches!(
+            decode_snippet(&token, &config()),
+            Err(Error::InvalidSession)
+        ));
     }
 
     #[test]

@@ -5,7 +5,7 @@ use serde::Serialize;
 use tokio::time::MissedTickBehavior;
 
 use crate::{
-    api::{AGENT_CAPABILITIES, RELAY_CAPABILITIES},
+    api::capabilities,
     config::{Config, Mode},
     protocol::{PROTOCOL_MAX, PROTOCOL_MIN},
 };
@@ -15,7 +15,7 @@ struct Heartbeat<'a> {
     version: &'a str,
     mode: Mode,
     protocol: ProtocolRange,
-    capabilities: &'a [&'a str],
+    capabilities: Vec<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -45,21 +45,81 @@ async fn send(client: &Client, config: &Config) -> reqwest::Result<()> {
     let response = client
         .post(endpoint)
         .bearer_auth(format!("{}.{}", config.installation_id, config.secret))
-        .json(&Heartbeat {
-            version: env!("CARGO_PKG_VERSION"),
-            mode: config.mode,
-            protocol: ProtocolRange {
-                min: PROTOCOL_MIN,
-                max: PROTOCOL_MAX,
-            },
-            capabilities: match config.mode {
-                Mode::Agent => AGENT_CAPABILITIES,
-                Mode::Relay => RELAY_CAPABILITIES,
-            },
-        })
+        .json(&heartbeat(config))
         .send()
         .await?;
 
     response.error_for_status()?;
     Ok(())
+}
+
+/// The same capabilities `/api/v1/info` reports, not just the console ones.
+///
+/// The panel overwrites what it knows about an agent with each heartbeat, so a
+/// heartbeat that listed only the consoles took back, the moment the agent
+/// started, every capability the configuration had granted -- and with them
+/// the panel's permission to send this node templates or migrations.
+fn heartbeat(config: &Config) -> Heartbeat<'static> {
+    Heartbeat {
+        version: env!("CARGO_PKG_VERSION"),
+        mode: config.mode,
+        protocol: ProtocolRange {
+            min: PROTOCOL_MIN,
+            max: PROTOCOL_MAX,
+        },
+        capabilities: capabilities(config),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use url::Url;
+
+    use super::*;
+    use crate::{
+        api::{EXPORT_CAPABILITY, RELAY_CAPABILITIES, SNIPPETS_CAPABILITY, TEMPLATE_CAPABILITY},
+        config::AgentConfig,
+    };
+
+    fn config(mode: Mode) -> Config {
+        Config {
+            mode,
+            listen_addr: "127.0.0.1:2115".parse().unwrap(),
+            installation_id: "anchor_1".into(),
+            secret: "12345678901234567890123456789012".into(),
+            panel_url: Url::parse("https://panel.example.com").unwrap(),
+            public_url: None,
+            agent: AgentConfig::default(),
+        }
+    }
+
+    #[test]
+    fn reports_what_the_configuration_grants() {
+        let capabilities = heartbeat(&config(Mode::Agent)).capabilities;
+
+        assert!(capabilities.contains(&TEMPLATE_CAPABILITY));
+        assert!(capabilities.contains(&EXPORT_CAPABILITY));
+        assert!(capabilities.contains(&SNIPPETS_CAPABILITY));
+    }
+
+    #[test]
+    fn withdraws_what_the_configuration_switches_off() {
+        let mut config = config(Mode::Agent);
+        config.agent.exports_enabled = false;
+        config.agent.snippets_enabled = false;
+
+        let capabilities = heartbeat(&config).capabilities;
+
+        assert!(!capabilities.contains(&EXPORT_CAPABILITY));
+        assert!(!capabilities.contains(&SNIPPETS_CAPABILITY));
+        assert!(capabilities.contains(&TEMPLATE_CAPABILITY));
+    }
+
+    #[test]
+    fn a_relay_reports_only_the_relay() {
+        assert_eq!(
+            heartbeat(&config(Mode::Relay)).capabilities,
+            RELAY_CAPABILITIES
+        );
+    }
 }

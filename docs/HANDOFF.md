@@ -52,6 +52,23 @@ Protocol claims accept both JWT-standard audience encodings (a string or string 
 
 When the console process exits non-zero before the client disconnects, the agent closes the socket with `1011` and puts the process's own stderr in the close reason, flattened to one line and cut to the 123 bytes a control frame allows. This is additive: a client that ignores the reason sees the same close it always did. It exists because the failure that matters most in practice — `qm terminal` against a VM with no serial device — used to reach only the agent log, leaving the browser with a socket that opened and shut without a frame, indistinguishable from a network fault.
 
+## Provisioner Snippets
+
+Proxmox reads custom cloud-init (`cicustom`) only from a file on a storage with the `snippets` content type, and its API cannot upload one, so the panel hands Anchor the file for a server's provisioner scripts and Anchor writes it. The panel's wire contract is `docs/provisioner-anchor-contract.md` in the panel repository.
+
+Endpoints:
+
+- `PUT /api/v1/snippets/{name}` — the body is the snippet as raw bytes, at most 1 MiB. Answers `{ "volume", "sha256", "size" }`.
+- `DELETE /api/v1/snippets/{name}` — answers `{ "deleted": bool }`; a file that is already gone is `false`, not an error.
+
+The bearer token is its own claim set, keyed `snippet`, with `action` `write` (`storage`, `name`, `sha256`) or `delete` (`storage`, `name`). The path's `{name}` has to be the claim's, and a delete token cannot write. Names must match `^convoy-[a-z0-9][a-z0-9-]{0,95}\.yaml$`, so an admin's own snippets are out of reach. The body is read only after the token checks out, and must hash to the claim's `sha256`.
+
+The storage must be active on this node in `pvesm status --content snippets`, and the file goes where `pvesm path <storage>:snippets/<name>` resolves it. Anchor refuses a resolved path that is not absolute, contains `..`, does not end in exactly `name`, or is not directly inside a directory called `snippets`. It creates that directory if it is missing, but never the storage root above it, so a storage whose root has gone is refused rather than recreated on the node's own disk. The write is a `0600` temporary in the same directory, fsynced and renamed over the target. Contents are never logged.
+
+Status codes: `401` for the token, `400` for a bad name or a body that does not match its digest, `409` when `agent.snippets_enabled` is off or the storage cannot hold snippets, `413` over 1 MiB, `500` when `pvesm` itself cannot be run. The capability is `provisioning.snippets`, reported in `/api/v1/info` and the heartbeat.
+
+The hardened unit can write `/var/lib/vz` and `/mnt/pve`. A directory storage mounted anywhere else needs a drop-in adding its path to `ReadWritePaths`. A storage with `content-dirs` pointing snippets at a directory not called `snippets` is refused. Not yet exercised against a live node.
+
 ## Current Implementation
 
 - Rust CLI with `serve`, `enroll`, and `validate` commands.
