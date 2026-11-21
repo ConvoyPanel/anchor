@@ -145,7 +145,7 @@ impl Snippet {
             }
             Err(error) => {
                 tracing::warn!(path = %path.display(), %error, "could not delete a snippet");
-                Err(error.into())
+                Err(filesystem_error(path.parent().unwrap_or(&path), error))
             }
         }
     }
@@ -298,7 +298,7 @@ fn write_atomically(target: &Path, contents: &[u8]) -> Result<()> {
 
     if let Err(error) = write_then_rename(&temporary, target, contents) {
         let _ = std::fs::remove_file(&temporary);
-        return Err(error.into());
+        return Err(filesystem_error(dir, error));
     }
 
     // Make the rename itself durable. Best effort: some network filesystems
@@ -338,8 +338,26 @@ fn ensure_snippets_dir(dir: &Path) -> Result<()> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             Err(missing_root(dir.parent().unwrap_or(dir)))
         }
-        Err(error) => Err(error.into()),
+        Err(error) => Err(filesystem_error(dir, error)),
     }
+}
+
+/// Turn a failed write or delete into what the panel shows the admin.
+///
+/// A storage outside the unit's `ReadWritePaths` is mounted read-only for
+/// Anchor. That is an admin's fix rather than a bug, so it goes back as a 409
+/// that names the fix. As a bare 500 the admin would read only "Anchor could
+/// not complete this request" on the failed build, with the reason in a log
+/// on the node.
+fn filesystem_error(dir: &Path, error: io::Error) -> Error {
+    if error.kind() == io::ErrorKind::ReadOnlyFilesystem {
+        return Error::SnippetStorage(format!(
+            "{} is read-only to Anchor. Add it to ReadWritePaths in a drop-in for anchor.service.",
+            dir.display()
+        ));
+    }
+
+    error.into()
 }
 
 fn missing_root(root: &Path) -> Error {
@@ -398,6 +416,29 @@ local             dir     active        98497780        12345678        81234567
 nfs-share         nfs   inactive               0               0               0    0.00%
 retired           dir   disabled               0               0               0      N/A
 ";
+
+    /// Seen on a live node: a storage outside `ReadWritePaths` fails with
+    /// EROFS, and the panel has to be told what to do about it.
+    #[test]
+    fn a_read_only_storage_names_the_fix() {
+        let error = filesystem_error(
+            Path::new("/srv/vz/snippets"),
+            io::Error::from(io::ErrorKind::ReadOnlyFilesystem),
+        );
+
+        assert!(matches!(&error, Error::SnippetStorage(message)
+            if message.contains("/srv/vz/snippets") && message.contains("ReadWritePaths")));
+    }
+
+    #[test]
+    fn any_other_filesystem_error_stays_a_server_error() {
+        let error = filesystem_error(
+            Path::new("/var/lib/vz/snippets"),
+            io::Error::from(io::ErrorKind::PermissionDenied),
+        );
+
+        assert!(matches!(error, Error::Io(_)));
+    }
 
     #[test]
     fn accepts_the_names_the_panel_mints() {
