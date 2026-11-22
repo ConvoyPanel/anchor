@@ -94,6 +94,17 @@ pub struct AgentConfig {
     /// not a hint: the sweeper does not ask whether anything is still using it.
     #[serde(default = "default_export_ttl_secs")]
     pub export_ttl_secs: u64,
+    /// Whether this agent will write provisioner snippets at all. Proxmox reads
+    /// custom cloud-init only from a storage with the `snippets` content type,
+    /// and its API has no way to upload one, so this is the only route a
+    /// server's provisioner scripts have onto the node.
+    #[serde(default = "default_true")]
+    pub snippets_enabled: bool,
+    /// Asked which storages can hold snippets, and where a snippet on one of
+    /// them lives. Proxmox's answer, rather than a path built here, because a
+    /// storage's mount point is its configuration and not a convention.
+    #[serde(default = "default_pvesm_path")]
+    pub pvesm_path: String,
 }
 
 impl Default for AgentConfig {
@@ -112,6 +123,8 @@ impl Default for AgentConfig {
             exports_enabled: default_true(),
             export_dir: default_export_dir(),
             export_ttl_secs: default_export_ttl_secs(),
+            snippets_enabled: default_true(),
+            pvesm_path: default_pvesm_path(),
         }
     }
 }
@@ -164,6 +177,14 @@ impl Config {
                 "agent.export_dir must not be empty when exports are enabled".into(),
             ));
         }
+        if self.mode == Mode::Agent
+            && self.agent.snippets_enabled
+            && self.agent.pvesm_path.trim().is_empty()
+        {
+            return Err(Error::Configuration(
+                "agent.pvesm_path must not be empty when snippets are enabled".into(),
+            ));
+        }
         if self.agent.template_concurrency == 0 {
             return Err(Error::Configuration(
                 "agent.template_concurrency must be at least 1".into(),
@@ -214,6 +235,10 @@ fn default_template_temp_dir() -> String {
     "/var/lib/vz/dump/anchor-tmp".to_owned()
 }
 
+fn default_pvesm_path() -> String {
+    "/usr/sbin/pvesm".to_owned()
+}
+
 fn default_apidoc_path() -> String {
     "/usr/share/pve-docs/api-viewer/apidoc.js".to_owned()
 }
@@ -259,6 +284,45 @@ panel_url = "https://panel.example.com"
         assert_eq!(config.agent.export_dir, "/var/lib/vz/dump/anchor-exports");
         assert_eq!(config.agent.export_ttl_secs, 86_400);
         assert!(config.agent.exports_enabled);
+        assert!(config.agent.snippets_enabled);
+        assert_eq!(config.agent.pvesm_path, "/usr/sbin/pvesm");
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn a_node_that_writes_snippets_needs_pvesm() {
+        let config: Config = toml::from_str(
+            r#"
+mode = "agent"
+installation_id = "anchor_123"
+secret = "12345678901234567890123456789012"
+panel_url = "https://panel.example.com"
+
+[agent]
+pvesm_path = ""
+"#,
+        )
+        .unwrap();
+
+        assert!(matches!(config.validate(), Err(Error::Configuration(_))));
+    }
+
+    #[test]
+    fn a_node_without_snippets_need_not_have_pvesm() {
+        let config: Config = toml::from_str(
+            r#"
+mode = "agent"
+installation_id = "anchor_123"
+secret = "12345678901234567890123456789012"
+panel_url = "https://panel.example.com"
+
+[agent]
+snippets_enabled = false
+pvesm_path = ""
+"#,
+        )
+        .unwrap();
+
         assert!(config.validate().is_ok());
     }
 

